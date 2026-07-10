@@ -1,0 +1,14 @@
+faster-whisper==1.2.1
+fastapi==0.115.6
+uvicorn==0.34.0
+python-multipart==0.0.20
+# torch + torchaudio are installed in the Dockerfile from the PyTorch cu124 index
+# before this file. Do not list them here — bare PyPI installs can pull wheels
+# linked against libcudart.so.13 while the image ships CUDA 12.6 runtime.
+torchlibrosa==0.1.0
+librosa==0.10.2.post1
+panns-inference==0.1.1
+# pyannote 3.3.x still calls hf_hub_download(use_auth_token=…); hub 1.x removed that kwarg.
+huggingface-hub>=0.20.3,<1.0.0
+# Speaker diarization (optional; gated by SPEAKERS_ENABLED + HF_TOKEN).
+pyannote.audio==3.3.2
