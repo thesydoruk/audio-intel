@@ -54,6 +54,10 @@ def iter_vad_windows(
             position / sample_rate,
             read_samples / sample_rate,
         )
+        # Source duration can overshoot the decoded WAV; empty decode means EOF.
+        # Advancing by zero would spin forever on the same ffmpeg seek.
+        if block.size == 0:
+            break
         position += len(block)
 
         buffer = np.concatenate((carry, block)) if carry.size else block

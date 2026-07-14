@@ -626,7 +626,6 @@ class AudioEventDetector:
             from audio_intel.audio.decode import probe_media_duration
 
             duration_s = probe_media_duration(path)
-        duration_s = round(duration_s, 1)
         started = time.perf_counter()
         events, debug = self._detect_chunked(
             path=path,

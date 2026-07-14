@@ -118,6 +118,10 @@ class MediaWorkspace:
         else:
             convert_to_wav(source_path, whisper_16k, sample_rate=SAMPLE_RATE)
 
+        # Container probe can be slightly longer than the decoded WAV; VAD must
+        # use the prepared whisper timeline or the last window seeks past EOF.
+        duration_s = probe_media_duration(str(whisper_16k))
+
         workspace = cls(
             source_path=source_path,
             root=root,

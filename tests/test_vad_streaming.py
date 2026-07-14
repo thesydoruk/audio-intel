@@ -82,6 +82,31 @@ class StreamingVadHelpersTest(unittest.TestCase):
         self.assertEqual(windows[0].shape[0], SILERO_WINDOW_SAMPLES)
         self.assertEqual(windows[-1].shape[0], SILERO_WINDOW_SAMPLES)
 
+    def test_iter_vad_windows_stops_when_decode_returns_empty(self) -> None:
+        """Oversized total_samples must not spin when reads hit EOF."""
+        sample_rate = 16000
+        real_samples = SILERO_WINDOW_SAMPLES * 2
+        samples = np.random.default_rng(1).standard_normal(real_samples).astype(np.float32)
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = tmp.name
+        try:
+            _write_pcm_wav(wav_path, samples, sample_rate=sample_rate)
+            windows = list(
+                iter_vad_windows(
+                    wav_path,
+                    sample_rate=sample_rate,
+                    total_samples=real_samples + SILERO_WINDOW_SAMPLES * 50,
+                    window_samples=SILERO_WINDOW_SAMPLES,
+                    block_duration_s=0.05,
+                )
+            )
+        finally:
+            os.unlink(wav_path)
+
+        self.assertGreaterEqual(len(windows), 2)
+        self.assertLessEqual(len(windows), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -538,7 +538,9 @@ class Transcriber:
             return [], []
         started = time.perf_counter()
         try:
-            duration_s = round(media.duration_s, 1)
+            # Keep full precision — rounding up to 0.1s overshoots the WAV and
+            # can leave AED with a past-EOF tail window.
+            duration_s = media.duration_s
             log.info(
                 "Sound detection starting: %.1fs at %d Hz", duration_s, self.cfg.aed_sample_rate
             )

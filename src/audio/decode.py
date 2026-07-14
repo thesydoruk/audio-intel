@@ -53,32 +53,46 @@ def probe_media_duration(path: str) -> float:
 
 
 def load_audio_window(path: str, sample_rate: int, start_s: float, duration_s: float) -> np.ndarray:
-    """Decode a mono float32 slice without loading the full file into memory."""
-    if duration_s <= 0:
+    """Decode a mono float32 slice without loading the full file into memory.
+
+    Returns an empty array at/past EOF or for sub-sample windows. ffmpeg seeks
+    past the end of short clips can hang for a long time; a timeout turns that
+    into an empty read so VAD/AED loops can terminate.
+    """
+    if duration_s <= 0 or start_s < 0:
         return np.array([], dtype=np.float32)
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-ss",
-            f"{start_s:.6f}",
-            "-i",
-            path,
-            "-t",
-            f"{duration_s:.6f}",
-            "-ar",
-            str(sample_rate),
-            "-ac",
-            "1",
-            "-f",
-            "f32le",
-            "pipe:1",
-        ],
-        capture_output=True,
-        check=True,
-    )
+    # One PCM float32 sample; shorter requests are noise and can hang ffmpeg.
+    if duration_s * sample_rate < 1.0:
+        return np.array([], dtype=np.float32)
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-ss",
+                f"{start_s:.6f}",
+                "-i",
+                path,
+                "-t",
+                f"{duration_s:.6f}",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-f",
+                "f32le",
+                "pipe:1",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return np.array([], dtype=np.float32)
+    if result.returncode != 0 or not result.stdout:
+        return np.array([], dtype=np.float32)
     return np.frombuffer(result.stdout, dtype=np.float32)
 
 
