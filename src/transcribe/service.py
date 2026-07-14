@@ -89,28 +89,30 @@ class Transcriber:
         self._vad = VadPipeline.from_server(cfg)
         self._vad.ensure_ready()
 
+        # AED / pyannote stay lazy until post-ASR so Whisper peak VRAM matches the
+        # older in-repo server (Whisper + VAD only at startup on shared GPUs).
         self.aed = AudioEventDetector(cfg) if cfg.aed_enabled else None
-        if self.aed is not None:
-            self.aed.ensure_ready()
-
         self.diarizer = SpeakerDiarizer(cfg) if cfg.diarization_enabled else None
-        if self.diarizer is not None:
-            self.diarizer.ensure_ready()
-
         self.embedder = SpeakerEmbedder(cfg) if cfg.diarization_enabled else None
-        if self.embedder is not None:
-            self.embedder.ensure_ready()
+        self._post_asr_ready_lock = threading.Lock()
+        self._aed_ready = False
+        self._speakers_ready = False
 
         self._aligners: dict[str, object] = {}
         self._aligners_lock = threading.Lock()
         if cfg.diarization_enabled:
             log.info(
-                "Speaker diarization enabled (device=%s, pipeline_workers=%d, "
+                "Speaker diarization enabled (lazy load; device=%s, pipeline_workers=%d, "
                 "embed_workers=%d, chunk_s=%.0fs)",
                 cfg.diarization_device,
                 cfg.diarization_pipeline_workers,
                 cfg.diarization_embed_workers,
                 cfg.diarization_chunk_s,
+            )
+        if cfg.aed_enabled:
+            log.info(
+                "Sound-event detection enabled (lazy load; device=%s)",
+                cfg.aed_device,
             )
         if cfg.alignment_enabled:
             self._preload_alignment_models()
@@ -259,6 +261,7 @@ class Transcriber:
                     speech_segments, speakers = diar_future.result()
                     sound_event_segments, aed_debug = aed_future.result()
             elif run_diarization:
+                _release_accelerator_memory()
                 speech_segments, speakers = self._apply_diarization(media, speech_segments)
             elif run_aed:
                 _release_accelerator_memory()
@@ -481,12 +484,39 @@ class Transcriber:
             meta["alignment_failed"] = True
             return speech_segments, meta
 
+    def _ensure_aed_ready(self) -> None:
+        """Load PANNs weights on first sound-event request."""
+        if self.aed is None or self._aed_ready:
+            return
+        with self._post_asr_ready_lock:
+            if self._aed_ready:
+                return
+            _release_accelerator_memory()
+            log.info("Lazy-loading sound-event models")
+            self.aed.ensure_ready()
+            self._aed_ready = True
+
+    def _ensure_speakers_ready(self) -> None:
+        """Load pyannote pipelines/embeddings on first diarization request."""
+        if self.diarizer is None or self._speakers_ready:
+            return
+        with self._post_asr_ready_lock:
+            if self._speakers_ready:
+                return
+            _release_accelerator_memory()
+            log.info("Lazy-loading speaker diarization models")
+            self.diarizer.ensure_ready()
+            if self.embedder is not None:
+                self.embedder.ensure_ready()
+            self._speakers_ready = True
+
     def _apply_diarization(
         self,
         media: MediaWorkspace,
         speech_segments: list[dict],
     ) -> tuple[list[dict], list[dict]]:
         """Run pyannote diarization with speaker embeddings and assign speaker ids."""
+        self._ensure_speakers_ready()
         started = time.perf_counter()
         speakers: list[dict] = []
         updated_segments = speech_segments
@@ -536,6 +566,7 @@ class Transcriber:
         """Run PANNs sound-event detection at 32 kHz; never fails the request."""
         if self.aed is None or media.aed_path is None:
             return [], []
+        self._ensure_aed_ready()
         started = time.perf_counter()
         try:
             # Keep full precision — rounding up to 0.1s overshoots the WAV and
