@@ -21,6 +21,7 @@ def _vad_config_from_server(cfg: Config) -> VADConfig:
         min_silence_duration_ms=cfg.vad_min_silence_ms,
         speech_pad_ms=cfg.vad_speech_pad_ms,
         stream_block_s=cfg.vad_stream_block_s,
+        use_onnx=cfg.vad_use_onnx,
     )
 
 

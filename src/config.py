@@ -84,6 +84,7 @@ class Config:
     vad_min_silence_ms: int
     vad_speech_pad_ms: int
     vad_stream_block_s: float
+    vad_use_onnx: bool
     max_chunk_s: float
     chunk_pad_s: float
     aed_enabled: bool
@@ -126,7 +127,9 @@ class VADConfig:
     min_speech_duration_ms: int = 250
     min_silence_duration_ms: int = 400
     speech_pad_ms: int = 200
-    use_onnx: bool = False
+    # ONNX avoids loading PyTorch Silero in the same process as CUDA ctranslate2
+    # Whisper — that mix segfaults (exit 139) right after VAD on some hosts.
+    use_onnx: bool = True
     stream_block_s: float = 30.0
 
 
@@ -168,6 +171,8 @@ def load_config() -> Config:
         vad_min_silence_ms=_int("VAD_MIN_SILENCE_MS", 400),
         vad_speech_pad_ms=_int("VAD_SPEECH_PAD_MS", 200),
         vad_stream_block_s=_float("VAD_STREAM_BLOCK_S", 30.0),
+        # Default ONNX: PyTorch Silero + CUDA ctranslate2 Whisper segfaults on some GPUs.
+        vad_use_onnx=_bool("VAD_USE_ONNX", True),
         max_chunk_s=_float("VAD_MAX_CHUNK_S", 28.0),
         chunk_pad_s=_float("VAD_CHUNK_PAD_S", 0.2),
         aed_enabled=_bool("SOUND_EVENTS_ENABLED", True),
