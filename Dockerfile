@@ -24,8 +24,13 @@ RUN python3 -m venv /opt/venv \
         torch==2.5.1 torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cu124 \
     && /opt/venv/bin/pip install --no-cache-dir -e ".[all]" \
-    # whisperx may pin ctranslate2==4.4 (cuDNN 8); this image ships cuDNN 9.
-    && /opt/venv/bin/pip install --no-cache-dir "ctranslate2>=4.5.0,<5"
+    # whisperx may pin ctranslate2==4.4 (cuDNN 8) and/or upgrade torch; restore
+    # the CUDA 12.4 + cuDNN 9 stack required by this runtime image.
+    && /opt/venv/bin/pip install --no-cache-dir "ctranslate2>=4.5.0,<5" \
+    && /opt/venv/bin/pip install --no-cache-dir \
+        torch==2.5.1 torchaudio==2.5.1 \
+        --index-url https://download.pytorch.org/whl/cu124
+
 
 EXPOSE 8080
 CMD ["python", "-m", "audio_intel.server"]
