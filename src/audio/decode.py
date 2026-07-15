@@ -93,7 +93,9 @@ def load_audio_window(path: str, sample_rate: int, start_s: float, duration_s: f
         return np.array([], dtype=np.float32)
     if result.returncode != 0 or not result.stdout:
         return np.array([], dtype=np.float32)
-    return np.frombuffer(result.stdout, dtype=np.float32)
+    # Copy: np.frombuffer is read-only; ctranslate2/faster-whisper segfaults on
+    # non-writable float32 views (exit 139) when used as Whisper chunk input.
+    return np.frombuffer(result.stdout, dtype=np.float32).copy()
 
 
 def write_temp_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
