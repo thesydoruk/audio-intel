@@ -23,7 +23,9 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir \
         torch==2.5.1 torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cu124 \
-    && /opt/venv/bin/pip install --no-cache-dir -e ".[all]"
+    && /opt/venv/bin/pip install --no-cache-dir -e ".[all]" \
+    # whisperx may pin ctranslate2==4.4 (cuDNN 8); this image ships cuDNN 9.
+    && /opt/venv/bin/pip install --no-cache-dir "ctranslate2>=4.5.0,<5"
 
 EXPOSE 8080
 CMD ["python", "-m", "audio_intel.server"]
