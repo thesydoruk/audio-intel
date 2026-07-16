@@ -51,9 +51,21 @@ def _assign_speaker_by_overlap(seg: dict, intervals: list[dict]) -> dict:
     return new_seg
 
 
+def _text_from_words(words: list[dict]) -> str:
+    """Join word tokens into segment text with spaces.
+
+    Whisper tokens often carry a leading space, but
+    :func:`~audio_intel.transcribe.segments.segment_from_whisper` strips each
+    token before storage. Rejoining with an empty separator then glues words
+    together; always strip tokens and insert spaces explicitly.
+    """
+    parts = [str(word["word"]).strip() for word in words if str(word.get("word", "")).strip()]
+    return normalize_segment_text(" ".join(parts))
+
+
 def _build_segment_from_words(base: dict, words: list[dict], speaker_id: str | None) -> dict:
     """Build one speech segment from a consecutive run of word timestamps."""
-    text = normalize_segment_text("".join(str(word["word"]) for word in words).strip())
+    text = _text_from_words(words)
     new_seg = _strip_internal_fields(base)
     new_seg.update(
         {

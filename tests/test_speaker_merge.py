@@ -109,6 +109,27 @@ class SpeakerMergeTests(unittest.TestCase):
         assigned, _ = assign_speakers_to_segments(segments, intervals)
         self.assertEqual(assigned[0]["text"], "привет мир")
 
+    def test_rebuild_inserts_spaces_when_word_tokens_are_stripped(self) -> None:
+        """Production path: segment_from_whisper strips leading spaces on words."""
+        segments = [
+            {
+                "kind": "speech",
+                "start": 0.0,
+                "end": 5.0,
+                "text": "Welcome everyone to another episode",
+                "words": [
+                    {"start": 0.0, "end": 0.5, "word": "Welcome"},
+                    {"start": 0.5, "end": 1.2, "word": "everyone"},
+                    {"start": 1.2, "end": 1.5, "word": "to"},
+                    {"start": 1.5, "end": 2.2, "word": "another"},
+                    {"start": 2.2, "end": 3.0, "word": "episode"},
+                ],
+            }
+        ]
+        intervals = [{"start": 0.0, "end": 5.0, "speaker_id": "spk_0"}]
+        assigned, _ = assign_speakers_to_segments(segments, intervals)
+        self.assertEqual(assigned[0]["text"], "Welcome everyone to another episode")
+
     def test_strips_words_when_intervals_missing(self):
         segments = [
             {
