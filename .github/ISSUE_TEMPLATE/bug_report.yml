@@ -1,0 +1,53 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not include `.env` files, `HF_TOKEN` values, or other secrets.
+        For security issues use a [private advisory](https://github.com/thesydoruk/audio-intel/security/advisories/new).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, request flags, and a short description of the audio if relevant.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Git commit, tag, or `pip show audio-intel` version.
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you run it
+      options:
+        - Local virtualenv
+        - Docker Compose
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version, GPU/CUDA if used. Redact tokens.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines only. Redact tokens and file paths you do not want public.
+      render: text

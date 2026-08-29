@@ -1,0 +1,29 @@
+# See https://pre-commit.com for usage.
+default_language_version:
+  python: python3
+
+exclude: |
+  (?x)^(
+    \.venv/|
+    data/|
+    build/|
+    dist/
+  )
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.13
+    hooks:
+      - id: ruff
+        name: ruff lint (fix)
+        args: [--fix]
+      - id: ruff-format
+        name: ruff format
+
+  - repo: https://github.com/hukkin/mdformat
+    rev: 0.7.22
+    hooks:
+      - id: mdformat
+        name: mdformat
+        additional_dependencies:
+          - mdformat-gfm

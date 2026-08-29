@@ -1,0 +1,40 @@
+name: audio-intel
+
+services:
+  audio-intel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: audio-intel:local
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "${AUDIO_INTEL_PORT:-8080}:${AUDIO_INTEL_PORT:-8080}"
+    volumes:
+      - ${MODEL_CACHE_HOST_DIR:-./data/whisper}:/var/lib/whisper
+      - ${PANNS_CACHE_HOST_DIR:-./data/panns}:/root/panns_data
+    environment:
+      AUDIO_INTEL_PORT: ${AUDIO_INTEL_PORT:-8080}
+      MODEL_CACHE_DIR: /var/lib/whisper
+      HF_HOME: /var/lib/whisper
+      HF_HUB_DISABLE_XET: "1"
+      ASR_DEVICE: cuda
+      ASR_COMPUTE_TYPE: float16
+      SOUND_EVENTS_DEVICE: cuda
+      SPEAKERS_DEVICE: cuda
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:$$AUDIO_INTEL_PORT/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 80
+      start_period: 1800s
