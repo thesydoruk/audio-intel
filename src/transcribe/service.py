@@ -626,6 +626,63 @@ class Transcriber:
             self.aed.ensure_ready()
             self._aed_ready = True
 
+    def embed_speakers(
+        self,
+        path: str,
+        spans_by_speaker: dict[str, list[tuple[float, float]]],
+        *,
+        min_speech_s: float,
+        max_clip_s: float,
+    ) -> dict:
+        """Embed speakers from caller-supplied time spans, without ASR or diarization.
+
+        Lets a client re-embed speakers it already knows (for example stored voice
+        profiles after an embedding-model change) at a fraction of a full pass.
+        """
+        if self.embedder is None:
+            raise RuntimeError("Speaker embeddings are disabled (SPEAKERS_ENABLED=0)")
+        with self._request_semaphore:
+            self._ensure_embedder_ready()
+            with MediaWorkspace.prepare(path) as media:
+                from audio_intel.audio.decode import SAMPLE_RATE
+
+                intervals = [
+                    {"start": start, "end": end, "speaker_id": sid}
+                    for sid, spans in spans_by_speaker.items()
+                    for start, end in spans
+                ]
+                embeddings = self.embedder.embed_speakers(
+                    media.whisper_path,
+                    intervals,
+                    sample_rate=SAMPLE_RATE,
+                    min_speech_s=min_speech_s,
+                    max_clip_s=max_clip_s,
+                )
+                return {
+                    "duration": round(media.duration_s, 3),
+                    "embedding_model": self.embedder.model_id,
+                    "dimension": self.embedder.dimension,
+                    "speakers": [
+                        {
+                            "id": sid,
+                            "speech_seconds": round(
+                                sum(max(0.0, end - start) for start, end in spans), 3
+                            ),
+                            "embedding": embeddings.get(sid),
+                        }
+                        for sid, spans in spans_by_speaker.items()
+                    ],
+                }
+
+    def _ensure_embedder_ready(self) -> None:
+        """Load only the embedding models (the span endpoint needs no pipeline)."""
+        if self.embedder is None or self._speakers_ready:
+            return
+        with self._post_asr_ready_lock:
+            if self._speakers_ready:
+                return
+            self.embedder.ensure_ready()
+
     def _ensure_speakers_ready(self) -> None:
         """Load pyannote pipelines/embeddings on first diarization request."""
         if self.diarizer is None or self._speakers_ready:
@@ -691,6 +748,7 @@ class Transcriber:
                                 break
                     if emb:
                         row["embedding"] = emb
+                        row["embedding_model"] = self.embedder.model_id
             tagged = sum(1 for seg in updated_segments if seg.get("speaker_id"))
             log.info(
                 "Speaker pipeline finished in %.1fs: %d speakers, "

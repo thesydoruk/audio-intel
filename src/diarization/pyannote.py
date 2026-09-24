@@ -60,16 +60,25 @@ class SpeakerDiarizer:
             if not token:
                 raise ValueError("HF_TOKEN is required when SPEAKERS_ENABLED=1")
 
+            model_id = self.cfg.diarization_pipeline_model
             log.info(
-                "Loading pyannote diarization pipeline %d/%d (device=%s)",
+                "Loading pyannote diarization pipeline %s %d/%d (device=%s)",
+                model_id,
                 index + 1,
                 self._count,
                 self.cfg.diarization_device,
             )
             pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
+                model_id,
                 **pretrained_auth_kwargs(token, Pipeline.from_pretrained),
             )
+            if pipeline is None:
+                # pyannote returns None instead of raising when it cannot fetch the
+                # checkpoint, e.g. a gated repo whose terms were not accepted.
+                raise RuntimeError(
+                    f"Could not load {model_id}: accept its terms on Hugging Face "
+                    "for the account that owns HF_TOKEN"
+                )
             device = torch.device(self.cfg.diarization_device)
             pipeline.to(device)
             self._pipelines[index] = pipeline
@@ -81,7 +90,8 @@ class SpeakerDiarizer:
             self._rr += 1
             return index
 
-    def _normalize_pipeline_output(self, diarization) -> list[dict]:
+    def _normalize_pipeline_output(self, output) -> list[dict]:
+        diarization = _speaker_annotation(output)
         label_map: dict[str, str] = {}
         next_idx = 0
         intervals: list[dict] = []
@@ -372,6 +382,22 @@ class SpeakerDiarizer:
         if self.cfg.diarization_chunk_s > 0 and duration_s > self.cfg.diarization_chunk_s:
             return self._diarize_chunked(path, duration_s, link_embedder=link_embedder)
         return self._diarize_file(path)
+
+
+def _speaker_annotation(output):
+    """Return the speaker turns from a pyannote 3.x or 4.x pipeline result.
+
+    pyannote 4 wraps turns in ``DiarizeOutput``. Its exclusive variant keeps one
+    speaker per instant, which is what ASR segments get assigned from; the
+    regular one repeats overlapped speech under every active speaker.
+    """
+    exclusive = getattr(output, "exclusive_speaker_diarization", None)
+    if exclusive is not None:
+        return exclusive
+    regular = getattr(output, "speaker_diarization", None)
+    if regular is not None:
+        return regular
+    return output  # pyannote 3.x: the Annotation itself
 
 
 def _next_speaker_index(intervals: list[dict]) -> int:

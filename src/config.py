@@ -101,6 +101,8 @@ class Config:
     aed_parallel_workers: int
     diarization_enabled: bool
     diarization_device: str
+    diarization_pipeline_model: str
+    diarization_embedding_model: str
     diarization_pipeline_workers: int
     diarization_embed_workers: int
     diarization_chunk_s: float
@@ -190,11 +192,19 @@ def load_config() -> Config:
         aed_parallel_workers=max(1, min(_int("SOUND_EVENTS_PARALLEL_WORKERS", 1), 8)),
         diarization_enabled=_bool("SPEAKERS_ENABLED", False),
         diarization_device=_str("SPEAKERS_DEVICE", "cuda"),
+        diarization_pipeline_model=_str(
+            "SPEAKERS_PIPELINE_MODEL", "pyannote/speaker-diarization-community-1"
+        ),
+        diarization_embedding_model=_str(
+            "SPEAKERS_EMBEDDING_MODEL", "pyannote/speaker-diarization-community-1/embedding"
+        ),
         diarization_pipeline_workers=max(1, min(_int("SPEAKERS_PARALLEL_WORKERS", 1), 4)),
         diarization_embed_workers=max(1, min(_int("SPEAKERS_EMBED_WORKERS", 1), 8)),
         diarization_chunk_s=_float("SPEAKERS_CHUNK_S", 600.0),
         diarization_chunk_overlap_s=_float("SPEAKERS_CHUNK_OVERLAP_S", 30.0),
-        diarization_link_threshold=_float("SPEAKERS_LINK_THRESHOLD", 0.75),
+        # community-1 space; equals 0.75 of 1.x pyannote/embedding at the same
+        # false-accept rate (calibrated on labeled speakers, 2026-09-25).
+        diarization_link_threshold=_float("SPEAKERS_LINK_THRESHOLD", 0.84),
         diarization_link_min_speech_s=_float("SPEAKERS_LINK_MIN_SPEECH_S", 0.5),
         hf_token=hf_token_raw or None,
         port=_int("AUDIO_INTEL_PORT", 8080),

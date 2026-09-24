@@ -2,6 +2,7 @@
 
 Endpoints:
   - ``POST /v1/audio/transcriptions`` (multipart) → verbose JSON
+  - ``POST /v1/speakers/embed`` (multipart) → speaker vectors for known time spans
   - ``GET /health`` → liveness
 
 The response keeps the OpenAI ``language`` string (first detected language, for
@@ -18,11 +19,13 @@ Server-side ``WORD_ALIGN_ENABLED``, ``SPEAKERS_ENABLED``, and ``SOUND_EVENTS_ENA
 also be on for the corresponding stage to run.
 
 Top-level ``speakers`` roster (when diarization ran): ``id``, ``speech_seconds``,
-``segment_count``.
+``segment_count``, and — when enough speech — ``embedding`` (L2-normalized) with
+``embedding_model``. Vectors from different models are not comparable.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import os
 import shutil
@@ -33,9 +36,10 @@ from audio_intel.server.transcription import (
     build_aed_overrides,
     build_transcription_body,
     normalize_language,
+    parse_speaker_spans,
 )
 from audio_intel.transcribe.service import Transcriber
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 cfg = load_config()
@@ -45,7 +49,12 @@ logging.basicConfig(
 )
 log = logging.getLogger("audio-intel")
 
-app = FastAPI(title="audio-intel", version="1.0")
+try:
+    VERSION = importlib.metadata.version("audio-intel")
+except importlib.metadata.PackageNotFoundError:  # running from a bare source tree
+    VERSION = "0+unknown"
+
+app = FastAPI(title="audio-intel", version=VERSION)
 transcriber = Transcriber(cfg)
 
 
@@ -54,8 +63,12 @@ def health() -> dict:
     """Liveness probe used by the docker healthcheck."""
     return {
         "status": "ok",
+        "version": VERSION,
         "model": cfg.model,
         "diarization_enabled": cfg.diarization_enabled,
+        "speaker_embedding_model": (
+            cfg.diarization_embedding_model if cfg.diarization_enabled else None
+        ),
         "alignment_enabled": cfg.alignment_enabled,
     }
 
@@ -136,6 +149,48 @@ def transcribe(
         return PlainTextResponse(result["text"])
 
     return JSONResponse(build_transcription_body(result))
+
+
+@app.post("/v1/speakers/embed")
+def embed_speakers(
+    file: UploadFile = File(...),
+    speakers: str = Form(...),
+    min_speech_s: float = Form(3.0),
+    max_clip_s: float = Form(30.0),
+):
+    """Embed speakers from known time spans, skipping ASR and diarization.
+
+    ``speakers`` is JSON ``{"<id>": [[start_s, end_s], ...], ...}``. Each roster row
+    returns ``embedding`` (``null`` below ``min_speech_s``) from the first
+    ``max_clip_s`` seconds of its spans — the same clip rule transcription uses.
+    """
+    if not cfg.diarization_enabled:
+        raise HTTPException(status_code=503, detail="SPEAKERS_ENABLED=0")
+    try:
+        spans_by_speaker = parse_speaker_spans(speakers)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    suffix = os.path.splitext(file.filename or "")[1] or ".bin"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp, length=1024 * 1024)
+        tmp_path = tmp.name
+    try:
+        result = transcriber.embed_speakers(
+            tmp_path,
+            spans_by_speaker,
+            min_speech_s=min_speech_s,
+            max_clip_s=max_clip_s,
+        )
+    finally:
+        os.unlink(tmp_path)
+    log.info(
+        "Speaker embed response: %s, %d/%d speakers embedded",
+        file.filename or "upload",
+        sum(1 for row in result["speakers"] if row["embedding"]),
+        len(result["speakers"]),
+    )
+    return JSONResponse(result)
 
 
 if __name__ == "__main__":
