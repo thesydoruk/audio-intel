@@ -1,11 +1,10 @@
 name: audio-intel
 
+# Runs the released image from GHCR. To build from this checkout instead:
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 services:
   audio-intel:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: audio-intel:local
+    image: ghcr.io/thesydoruk/audio-intel:${AUDIO_INTEL_VERSION:-2.0.0}
     env_file:
       - path: .env
         required: false
@@ -37,4 +36,5 @@ services:
       interval: 15s
       timeout: 5s
       retries: 80
+      # First start downloads Whisper weights (~3 GB for large-v3) before /health answers.
       start_period: 1800s
