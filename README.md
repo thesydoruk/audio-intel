@@ -66,7 +66,7 @@ docker run -d --name audio-intel --gpus all --restart unless-stopped \
   -v audio-intel-models:/var/lib/whisper \
   -v audio-intel-panns:/root/panns_data \
   -e HF_HOME=/var/lib/whisper \
-  ghcr.io/thesydoruk/audio-intel:2.0.0
+  ghcr.io/thesydoruk/audio-intel:2.0.1
 ```
 
 The two named volumes keep downloaded models across restarts and upgrades. On the first start
@@ -77,7 +77,7 @@ curl http://localhost:8080/health
 ```
 
 ```json
-{"status": "ok", "version": "2.0.0", "model": "large-v3", "diarization_enabled": false,
+{"status": "ok", "version": "2.0.1", "model": "large-v3", "diarization_enabled": false,
  "speaker_embedding_model": null, "alignment_enabled": false}
 ```
 
@@ -202,7 +202,7 @@ delete the downloaded models:
 
 ```bash
 docker rm -f audio-intel
-docker rmi ghcr.io/thesydoruk/audio-intel:2.0.0
+docker rmi ghcr.io/thesydoruk/audio-intel:2.0.1
 docker volume rm audio-intel-models audio-intel-panns     # models (optional)
 ```
 
@@ -502,7 +502,7 @@ Images are published to `ghcr.io/thesydoruk/audio-intel` by
 [`release.yml`](.github/workflows/release.yml):
 
 1. Bump `version` in `pyproject.toml` and merge to `main`.
-1. Push a matching tag: `git tag v2.0.0 && git push origin v2.0.0`.
+1. Push a matching tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 1. The workflow builds the image, runs the smoke check, pushes `:<version>` and `:latest`,
    then creates the GitHub Release. A tag that does not match `pyproject.toml` fails fast,
    and nothing is published unless the smoke check passes.

@@ -4,7 +4,7 @@ name: audio-intel
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 services:
   audio-intel:
-    image: ghcr.io/thesydoruk/audio-intel:${AUDIO_INTEL_VERSION:-2.0.0}
+    image: ghcr.io/thesydoruk/audio-intel:${AUDIO_INTEL_VERSION:-2.0.1}
     env_file:
       - path: .env
         required: false
