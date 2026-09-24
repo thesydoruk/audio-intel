@@ -5,8 +5,7 @@ clone to a reviewable pull request.
 
 ## Development setup
 
-Follow the [Quick start](../README.md#quick-start) in the README, then install
-dev tools:
+Use the [local Python install](../README.md#local-python) from the README:
 
 ```bash
 # Linux / macOS
@@ -16,8 +15,9 @@ dev tools:
 .\scripts\setup.ps1
 ```
 
-`setup` creates `.venv`, installs `.[all,dev]`, copies `.env.example` → `.env`,
-and registers the pre-commit hook.
+`setup` creates `.venv`, installs `.[all,dev]` plus WhisperX alignment (without its
+dependencies, since it pins `pyannote.audio < 4`), copies `.env.example` → `.env`, and
+registers the pre-commit hook. `scripts/uninstall.sh` / `uninstall.ps1` undoes it.
 
 Manual equivalent:
 
@@ -25,6 +25,7 @@ Manual equivalent:
 python -m venv .venv
 source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 pip install -e ".[all,dev]"
+pip install --no-deps whisperx==3.7.9 && pip install nltk pandas "transformers<5"
 pre-commit install
 cp .env.example .env
 ```
@@ -51,10 +52,10 @@ under `data/`.
 ## Pull requests
 
 1. Open an issue first for larger design changes.
-2. Keep the diff focused on one problem.
-3. Match the existing style (Ruff, 100-character line length, type hints).
-4. Add or update tests when behavior changes.
-5. Update the README when you change the API, env vars, or extras.
+1. Keep the diff focused on one problem.
+1. Match the existing style (Ruff, 100-character line length, type hints).
+1. Add or update tests when behavior changes.
+1. Update the README when you change the API, env vars, or extras.
 
 By submitting a contribution you agree that it is licensed under the
 [MIT License](../LICENSE), copyright Valerii Sydoruk unless you state otherwise

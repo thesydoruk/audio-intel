@@ -137,6 +137,36 @@ class RequestFeatureFlagsTest(unittest.TestCase):
                 self.assertEqual(result["speakers"], [{"id": "S1"}])
                 self.assertEqual(len(result["segments"]), 2)
 
+    def test_diarization_model_load_failure_keeps_the_transcript(self) -> None:
+        cfg = replace(load_config(), diarization_enabled=True)
+
+        with (
+            mock.patch("audio_intel.transcribe.service.WhisperEngine"),
+            mock.patch("audio_intel.transcribe.service.VadPipeline"),
+            mock.patch("audio_intel.transcribe.service.AudioEventDetector"),
+            mock.patch("audio_intel.transcribe.service.SpeakerDiarizer"),
+            mock.patch("audio_intel.transcribe.service.SpeakerEmbedder"),
+            mock.patch("audio_intel.transcribe.service._release_accelerator_memory"),
+        ):
+            transcriber = Transcriber(cfg)
+            # e.g. a gated Hugging Face repo whose terms the token has not accepted
+            transcriber.diarizer.ensure_ready.side_effect = RuntimeError("gated repo")
+            speech = [{"kind": "speech", "start": 0.0, "end": 1.0, "text": "hi"}]
+            media = mock.MagicMock(duration_s=1.0, whisper_path="whisper.wav")
+
+            with self.assertLogs("audio-intel", level="ERROR"):
+                segments, speakers = transcriber._apply_diarization(media, speech)
+
+            self.assertIs(segments, speech)
+            self.assertEqual(speakers, [])
+            transcriber.diarizer.diarize.assert_not_called()
+
+            # Not marked ready, so the next diarize request retries the load.
+            transcriber.diarizer.ensure_ready.side_effect = None
+            transcriber.diarizer.diarize.return_value = []
+            transcriber._apply_diarization(media, speech)
+            self.assertEqual(transcriber.diarizer.ensure_ready.call_count, 2)
+
     def test_disables_whisper_word_timestamps_when_ctc_will_run(self) -> None:
         cfg = replace(load_config(), alignment_enabled=True)
 

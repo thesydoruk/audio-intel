@@ -702,8 +702,20 @@ class Transcriber:
         media: MediaWorkspace,
         speech_segments: list[dict],
     ) -> tuple[list[dict], list[dict]]:
-        """Run pyannote diarization with speaker embeddings and assign speaker ids."""
-        self._ensure_speakers_ready()
+        """Run pyannote diarization with speaker embeddings and assign speaker ids.
+
+        Best-effort like the rest of the stage: when the models cannot load (e.g. a
+        gated repo whose terms the HF_TOKEN account has not accepted), the request
+        still returns its transcript, and the next diarize request retries the load.
+        """
+        try:
+            self._ensure_speakers_ready()
+        except Exception:  # noqa: BLE001 — diarization is best-effort
+            log.exception(
+                "Speaker diarization models failed to load; returning speech without "
+                "speaker_id (check HF_TOKEN and the model's terms on Hugging Face)"
+            )
+            return speech_segments, []
         started = time.perf_counter()
         speakers: list[dict] = []
         updated_segments = speech_segments
