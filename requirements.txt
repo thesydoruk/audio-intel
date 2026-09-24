@@ -8,7 +8,10 @@ python-multipart==0.0.20
 torchlibrosa==0.1.0
 librosa==0.10.2.post1
 panns-inference==0.1.1
-# pyannote 3.3.x still calls hf_hub_download(use_auth_token=…); hub 1.x removed that kwarg.
-huggingface-hub>=0.20.3,<1.0.0
+# transformers (whisperx alignment) still requires hub < 1.0.
+huggingface-hub>=0.28.1,<1.0.0
 # Speaker diarization (optional; gated by SPEAKERS_ENABLED + HF_TOKEN).
-pyannote.audio==3.3.2
+# 4.x needs torch >= 2.8 and torchcodec 0.7 (installed in the Dockerfile).
+pyannote.audio==4.0.7
+# Legacy checkpoints (pyannote/embedding) pickle omegaconf objects; 4.x dropped the dep.
+omegaconf>=2.1,<3

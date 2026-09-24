@@ -16,7 +16,7 @@ One file per request via an OpenAI-compatible API (`POST /v1/audio/transcription
 | ------------ | -------------- | -------------------------------------------- |
 | ASR          | faster-whisper | VAD → chunks → transcription with timestamps |
 | Alignment    | WhisperX CTC   | Refines word-level timestamps                |
-| Diarization  | pyannote 3.x   | `speaker_id` on speech segments              |
+| Diarization  | pyannote 4.x   | `speaker_id` on speech segments (community-1) |
 | Sound events | PANNs CNN14    | Non-speech events on the same time axis      |
 
 Input: any format supported by ffmpeg (wav, mp3, mp4, …).
@@ -98,7 +98,8 @@ are used only by **Docker Compose** (volume mounts), not by the Python app.
 
 ### `GET /health`
 
-Liveness probe. Returns `status`, `model`, and flags for enabled capabilities.
+Liveness probe. Returns `status`, `version`, `model`, flags for enabled capabilities, and
+`speaker_embedding_model` when diarization is enabled.
 
 ### `POST /v1/audio/transcriptions`
 
@@ -143,8 +144,32 @@ Top-level fields:
 
 - `languages` — all detected languages in order
 - `confidence` — duration-weighted mean
-- `speakers` — roster after diarization (`id`, `speech_seconds`, `segment_count`)
+- `speakers` — roster after diarization (`id`, `speech_seconds`, `segment_count`, and with
+  enough speech an L2-normalized `embedding` plus the `embedding_model` that produced it)
 - with `align=true`: `alignment_requested`, `alignment_applied`, `alignment_failed`, `aligned_at`
+
+### `POST /v1/speakers/embed`
+
+Speaker vectors for time spans the caller already knows — no ASR, no diarization.
+Useful to re-embed stored speakers after `SPEAKERS_EMBEDDING_MODEL` changes.
+
+| Field          | Default | Description                                               |
+| -------------- | ------- | --------------------------------------------------------- |
+| `file`         | —       | Audio/video file (required)                               |
+| `speakers`     | —       | JSON `{"<id>": [[start_s, end_s], ...]}`, ≤ 256 speakers  |
+| `min_speech_s` | `3.0`   | Below this much speech a speaker gets `embedding: null`   |
+| `max_clip_s`   | `30.0`  | Only the first N seconds of each speaker's spans are used |
+
+Returns `embedding_model`, `dimension`, and `speakers[]` with `id`, `speech_seconds`,
+`embedding`. The clip rule matches the transcription roster, so vectors are comparable.
+
+### Speaker embedding models
+
+Vectors from different models live in different spaces (and may differ in length):
+never compare or average them. Every vector is tagged with `embedding_model`; a client
+that stores vectors must re-embed or drop them when that id changes. The default is
+`pyannote/speaker-diarization-community-1/embedding` (256-d); 1.x served
+`pyannote/embedding` (512-d).
 
 ## How it works
 
@@ -195,9 +220,10 @@ src/                         # import: audio_intel.*
 ```bash
 pip install -e .              # core: faster-whisper, decode
 pip install -e ".[server]"    # + FastAPI, pyannote, PANNs
-pip install -e ".[align]"     # + WhisperX
 pip install -e ".[vad]"       # + silero-vad
-pip install -e ".[all]"       # full stack
+pip install -e ".[all]"       # server + vad
+# WhisperX pins pyannote.audio < 4; install it without deps, as the Dockerfile does:
+pip install --no-deps whisperx==3.7.9 && pip install nltk pandas "transformers<5"
 pip install -e ".[dev]"       # pytest, ruff, pre-commit
 ```
 
@@ -224,6 +250,23 @@ pre-commit run --all-files
 
 Unit tests do not require a GPU (chunking, normalization, alignment bridge, AED helpers).
 
+`scripts/image-smoke.sh <image>` checks a built image on a CPU-only machine: imports the
+native stack (torch, torchcodec/FFmpeg, pyannote, WhisperX alignment, CTranslate2) and runs
+the tests against the image's own dependencies. CI runs it whenever the image recipe changes.
+
+## Releases
+
+Images are published to `ghcr.io/thesydoruk/audio-intel` by
+[`release.yml`](.github/workflows/release.yml):
+
+1. Bump `version` in `pyproject.toml` and merge to `main`.
+2. Push a matching tag: `git tag v2.0.0 && git push origin v2.0.0`.
+3. The workflow builds the image, runs the smoke check, pushes `:<version>` and `:latest`,
+   then creates the GitHub Release. A tag that does not match `pyproject.toml` fails fast.
+
+Deploy by pinning the version tag in Compose (`image: ghcr.io/thesydoruk/audio-intel:2.0.0`)
+and running `docker compose pull audio-intel && docker compose up -d audio-intel`.
+
 ## Contributing
 
 See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for setup, tests, and pull-request
@@ -237,7 +280,7 @@ This project's source code is released under the [MIT License](LICENSE).
 
 Third-party libraries and pretrained models keep their own licenses and terms.
 In particular, pyannote checkpoints on Hugging Face
-(`pyannote/speaker-diarization-3.1`, `pyannote/segmentation-3.0`) are gated:
+(`pyannote/speaker-diarization-community-1`, CC-BY-4.0) are gated:
 accept their conditions and set `HF_TOKEN` before enabling diarization.
 Whisper, Silero VAD, WhisperX align models, and PANNs / AudioSet assets are
 downloaded separately and are not redistributed in this repository.

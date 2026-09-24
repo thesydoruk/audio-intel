@@ -15,7 +15,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from audio_intel.config import load_config
-from audio_intel.diarization.embeddings import SpeakerEmbedder  # noqa: E402
+from audio_intel.diarization.embeddings import SpeakerEmbedder, split_model_id  # noqa: E402
 
 
 def _write_pcm_wav(path: str, samples: np.ndarray, sample_rate: int) -> None:
@@ -73,6 +73,50 @@ class SpeakerClipFromPathTest(unittest.TestCase):
             )
         load_full.assert_not_called()
         self.assertEqual(out, {})
+
+
+class EmbeddingModelIdTest(unittest.TestCase):
+    def test_repo_with_subfolder(self) -> None:
+        self.assertEqual(
+            split_model_id("pyannote/speaker-diarization-community-1/embedding"),
+            ("pyannote/speaker-diarization-community-1", "embedding"),
+        )
+
+    def test_plain_repo(self) -> None:
+        self.assertEqual(split_model_id("pyannote/embedding"), ("pyannote/embedding", None))
+
+    def test_local_path_is_kept_whole(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(split_model_id(root), (root, None))
+
+
+class EmbeddingNormalizationTest(unittest.TestCase):
+    def _embedder(self) -> SpeakerEmbedder:
+        return SpeakerEmbedder(load_config())
+
+    def test_dimension_comes_from_first_vector_when_model_does_not_say(self) -> None:
+        embedder = self._embedder()
+        out = embedder._normalize_embedding(np.full(256, 2.0, dtype=np.float32))
+        assert out is not None
+        self.assertEqual(len(out), 256)
+        self.assertAlmostEqual(float(np.linalg.norm(out)), 1.0, places=4)
+        self.assertEqual(embedder.dimension, 256)
+
+    def test_rejects_vector_of_another_length(self) -> None:
+        embedder = self._embedder()
+        embedder._dimension = 256
+        self.assertIsNone(embedder._normalize_embedding(np.ones(512, dtype=np.float32)))
+
+    def test_rejects_zero_and_non_finite_vectors(self) -> None:
+        embedder = self._embedder()
+        self.assertIsNone(embedder._normalize_embedding(np.zeros(256, dtype=np.float32)))
+        bad = np.ones(256, dtype=np.float32)
+        bad[3] = np.nan
+        self.assertIsNone(embedder._normalize_embedding(bad))
+
+    def test_model_id_follows_config(self) -> None:
+        embedder = self._embedder()
+        self.assertEqual(embedder.model_id, embedder.cfg.diarization_embedding_model)
 
 
 if __name__ == "__main__":

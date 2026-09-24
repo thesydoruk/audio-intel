@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -59,6 +61,43 @@ def build_aed_overrides(
         "min_duration_s": aed_min_duration_s,
         "exclude_speech": aed_exclude_speech,
     }
+
+
+MAX_EMBED_SPEAKERS = 256
+
+
+def parse_speaker_spans(raw: str) -> dict[str, list[tuple[float, float]]]:
+    """Parse ``{"<id>": [[start_s, end_s], ...]}`` from the speaker-embed form field.
+
+    Raises ``ValueError`` with a client-facing message on any malformed input.
+    """
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"speakers is not valid JSON: {exc.msg}") from exc
+    if not isinstance(data, dict) or not data:
+        raise ValueError("speakers must be a non-empty object of id → [[start, end], ...]")
+    if len(data) > MAX_EMBED_SPEAKERS:
+        raise ValueError(f"at most {MAX_EMBED_SPEAKERS} speakers per request")
+
+    out: dict[str, list[tuple[float, float]]] = {}
+    for sid, spans in data.items():
+        if not isinstance(spans, list):
+            raise ValueError(f"speakers[{sid!r}] must be a list of [start, end] pairs")
+        parsed: list[tuple[float, float]] = []
+        for span in spans:
+            if (
+                not isinstance(span, list | tuple)
+                or len(span) != 2
+                or not all(isinstance(v, int | float) and not isinstance(v, bool) for v in span)
+            ):
+                raise ValueError(f"speakers[{sid!r}] has a span that is not [start, end]")
+            start, end = float(span[0]), float(span[1])
+            if not (math.isfinite(start) and math.isfinite(end)) or start < 0 or end <= start:
+                raise ValueError(f"speakers[{sid!r}] has an invalid span [{start}, {end}]")
+            parsed.append((start, end))
+        out[str(sid)] = parsed
+    return out
 
 
 def segment_payload(seg: dict) -> dict:

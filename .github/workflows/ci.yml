@@ -35,3 +35,46 @@ jobs:
         run: ruff check . && ruff format --check .
       - name: Tests
         run: python -m pytest tests/
+
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.filter.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            image:
+              - Dockerfile
+              - pyproject.toml
+              - requirements.txt
+              - scripts/image-smoke.sh
+              - .github/workflows/ci.yml
+
+  # The `test` job runs without torch/pyannote/whisperx, so dependency breakage
+  # (pins, native libraries) only shows up in the real image. Build it whenever
+  # the image recipe changes; no push.
+  image:
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Free disk space
+        # The image is ~13 GB unpacked; the stock runner has ~14 GB free.
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          docker-images: false
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: audio-intel:ci
+      - name: Smoke
+        run: bash scripts/image-smoke.sh audio-intel:ci

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,6 +17,16 @@ if TYPE_CHECKING:
 log = logging.getLogger("audio-intel")
 
 
+def split_model_id(model_id: str) -> tuple[str, str | None]:
+    """Split ``owner/repo[/subfolder]`` into a Hugging Face repo id and subfolder."""
+    if os.path.exists(model_id):
+        return model_id, None  # local checkpoint path
+    parts = [part for part in model_id.strip().strip("/").split("/") if part]
+    if len(parts) <= 2:
+        return "/".join(parts), None
+    return "/".join(parts[:2]), "/".join(parts[2:])
+
+
 class SpeakerEmbedder:
     """Pre-loaded pyannote embedding models shared across concurrent requests."""
 
@@ -26,6 +37,17 @@ class SpeakerEmbedder:
         self._inferences: list[object | None] = [None] * self._count
         self._locks = [threading.Lock() for _ in range(self._count)]
         self._init_lock = threading.Lock()
+        self._dimension: int | None = None
+
+    @property
+    def model_id(self) -> str:
+        """Checkpoint id reported next to every vector; spaces differ per model."""
+        return self.cfg.diarization_embedding_model
+
+    @property
+    def dimension(self) -> int | None:
+        """Vector length of the loaded model (``None`` until the first load)."""
+        return self._dimension
 
     def ensure_ready(self) -> None:
         """Load every pyannote embedding model copy."""
@@ -47,19 +69,34 @@ class SpeakerEmbedder:
                 raise ValueError("HF_TOKEN is required when SPEAKERS_ENABLED=1")
 
             log.info(
-                "Loading pyannote embedding model %d/%d (device=%s)",
+                "Loading pyannote embedding model %s %d/%d (device=%s)",
+                self.model_id,
                 index + 1,
                 self._count,
                 self.cfg.diarization_device,
             )
-            model = Model.from_pretrained(
-                "pyannote/embedding",
-                **pretrained_auth_kwargs(token, Model.from_pretrained),
-            )
+            checkpoint, subfolder = split_model_id(self.model_id)
+            kwargs = pretrained_auth_kwargs(token, Model.from_pretrained)
+            if subfolder:
+                kwargs["subfolder"] = subfolder
+            model = Model.from_pretrained(checkpoint, **kwargs)
+            if model is None:
+                raise RuntimeError(
+                    f"Could not load {self.model_id}: accept its terms on Hugging Face "
+                    "for the account that owns HF_TOKEN"
+                )
+            dimension = getattr(model, "dimension", None)
+            if isinstance(dimension, int) and dimension > 0:
+                self._dimension = dimension
             inference = Inference(model, window="whole")
             inference.to(torch.device(self.cfg.diarization_device))
             self._inferences[index] = inference
-            log.info("Speaker embedding model %d/%d loaded", index + 1, self._count)
+            log.info(
+                "Speaker embedding model %d/%d loaded (%s-d)",
+                index + 1,
+                self._count,
+                self._dimension or "?",
+            )
 
     @staticmethod
     def _build_speaker_clip(
@@ -94,16 +131,18 @@ class SpeakerEmbedder:
             return None
         return np.concatenate(chunks)
 
-    @staticmethod
-    def _normalize_embedding(vector) -> list[float] | None:
+    def _normalize_embedding(self, vector) -> list[float] | None:
         arr = np.asarray(vector, dtype=np.float32).reshape(-1)
+        if arr.size == 0 or not np.all(np.isfinite(arr)):
+            return None
+        if self._dimension is None:
+            self._dimension = int(arr.size)
+        elif arr.size != self._dimension:
+            return None
         norm = float(np.linalg.norm(arr))
         if norm <= 0:
             return None
-        normalized = (arr / norm).tolist()
-        if len(normalized) != 512:
-            return None
-        return [round(float(v), 6) for v in normalized]
+        return [round(float(v), 6) for v in (arr / norm).tolist()]
 
     def _embed_speaker(
         self,
@@ -137,10 +176,11 @@ class SpeakerEmbedder:
         normalized = self._normalize_embedding(vector)
         if normalized is None:
             log.warning(
-                "Unexpected embedding size for %s (model %d/%d, expected 512)",
+                "Unusable embedding for %s (model %d/%d, expected %s-d finite vector)",
                 sid,
                 model_idx + 1,
                 self._count,
+                self._dimension or "?",
             )
             return None
         return sid, normalized
