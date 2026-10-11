@@ -260,6 +260,7 @@ over `.env`. Every variable is documented with its values and effect in
 | `ASR_LANGUAGE`            | `auto`     | Force one language (`uk`, `en`, …) instead of detecting per chunk       |
 | `ASR_DEVICE`              | `cuda`     | `cpu` to run without a GPU (pair with `ASR_COMPUTE_TYPE=int8`)          |
 | `MAX_CONCURRENT_REQUESTS` | `2`        | Requests processed at once; the rest wait in line                       |
+| `MAX_QUEUED_REQUESTS`     | `8`        | Requests allowed to wait; beyond that the server answers `503`          |
 | `ASR_PARALLEL_WORKERS`    | `1`        | Whisper copies per request: faster on long files, more VRAM             |
 | `SPEAKERS_ENABLED`        | `0`        | Load diarization (needs `HF_TOKEN`, see above)                          |
 | `SOUND_EVENTS_ENABLED`    | `1`        | Load PANNs for sound events                                             |
@@ -272,18 +273,18 @@ Lower them first if you run out of VRAM.
 
 Variable groups:
 
-| Prefix                    | Purpose                                 |
-| ------------------------- | --------------------------------------- |
-| `AUDIO_INTEL_*`           | HTTP port                               |
-| `LOG_LEVEL`               | Log level                               |
-| `MAX_CONCURRENT_REQUESTS` | Parallel HTTP requests                  |
-| `ASR_*`                   | Model, device, decode, parallel workers |
-| `MODEL_CACHE_DIR`         | Model cache (HF + faster-whisper)       |
-| `HF_TOKEN`                | Hugging Face token for pyannote         |
-| `VAD_*`                   | Silero VAD and chunk splitting          |
-| `SOUND_EVENTS_*`          | PANNs — sound events                    |
-| `SPEAKERS_*`              | pyannote — speakers + embeddings        |
-| `WORD_ALIGN_*`            | WhisperX CTC alignment                  |
+| Prefix            | Purpose                                 |
+| ----------------- | --------------------------------------- |
+| `AUDIO_INTEL_*`   | HTTP port                               |
+| `LOG_LEVEL`       | Log level                               |
+| `MAX_*_REQUESTS`  | Parallel HTTP requests and queue length |
+| `ASR_*`           | Model, device, decode, parallel workers |
+| `MODEL_CACHE_DIR` | Model cache (HF + faster-whisper)       |
+| `HF_TOKEN`        | Hugging Face token for pyannote         |
+| `VAD_*`           | Silero VAD and chunk splitting          |
+| `SOUND_EVENTS_*`  | PANNs — sound events                    |
+| `SPEAKERS_*`      | pyannote — speakers + embeddings        |
+| `WORD_ALIGN_*`    | WhisperX CTC alignment                  |
 
 `MODEL_CACHE_HOST_DIR`, `PANNS_CACHE_HOST_DIR`, `AUDIO_INTEL_VERSION` and
 `CUDA_VISIBLE_DEVICES` are read only by Docker Compose, not by the Python app.
@@ -312,6 +313,12 @@ OpenAI-compatible multipart endpoint. **One file per request.**
 
 A post-ASR stage runs only when it is enabled on the server (`*_ENABLED=1`) **and** requested
 (`=true`). Asking for a stage the server has disabled is not an error; it is skipped.
+
+Errors: `400` for an unknown `language` code or malformed fields, `503` with `Retry-After`
+when more than `MAX_QUEUED_REQUESTS` requests are already waiting for a slot.
+
+The API has no authentication: run it on a trusted network or behind a reverse proxy that
+adds one.
 
 ```bash
 # Transcription only
@@ -405,8 +412,8 @@ upload (1 file) → MediaWorkspace → VAD → Whisper (parallel chunks)
 ```
 
 1. **Decode once.** The upload is converted into a temporary `MediaWorkspace`: a 16 kHz mono
-   WAV for speech stages and, with `sound_events`, a 32 kHz one for PANNs. Both conversions
-   run in parallel, and every later stage reads windows from these files instead of
+   WAV for speech stages and, with `sound_events`, a 32 kHz one for PANNs. One ffmpeg run
+   writes both, and every later stage reads windows from these files instead of
    re-decoding. The directory is deleted when the request finishes.
 1. **Find speech.** Silero VAD streams through the 16 kHz WAV in blocks (`VAD_STREAM_BLOCK_S`)
    without loading the whole file, and cuts speech into chunks of at most `VAD_MAX_CHUNK_S`.
@@ -414,15 +421,17 @@ upload (1 file) → MediaWorkspace → VAD → Whisper (parallel chunks)
    detecting the language per chunk, so mixed-language recordings come out right.
 1. **Post-ASR stages**, as requested:
    - **Alignment** refines word timestamps with a WhisperX CTC model for the language.
-   - **Diarization** runs pyannote. Files longer than `SPEAKERS_CHUNK_S` (default 600 s) are
-     diarized in overlapping chunks in parallel (`SPEAKERS_PARALLEL_WORKERS`). Speakers are
+   - **Diarization** runs pyannote on in-memory windows of the 16 kHz WAV. Files longer than
+     `SPEAKERS_CHUNK_S` (default 600 s) are diarized in overlapping chunks in parallel
+     (`SPEAKERS_PARALLEL_WORKERS`). Speakers are
      then linked across chunks by voice: first within the overlap, then against every
      speaker seen so far, and a final pass merges duplicate ids whose voices match
      (`SPEAKERS_LINK_THRESHOLD`). `SPEAKERS_CHUNK_S=0` diarizes the file in one pass.
    - **Sound events** run PANNs over 60 s windows in parallel
      (`SOUND_EVENTS_PARALLEL_WORKERS`); diarization and sound events run side by side.
 
-Whisper, VAD, and the alignment models for `WORD_ALIGN_PRELOAD` languages load at startup.
+Whisper, VAD (one copy per concurrent request), and the alignment models for
+`WORD_ALIGN_PRELOAD` languages load at startup.
 PANNs, pyannote, and alignment models for other languages load on the first request that
 needs them, which keeps startup VRAM low on shared GPUs.
 
@@ -467,6 +476,8 @@ pip install -e ".[dev]"       # pytest, ruff, pre-commit
 # without deps (scripts/setup.* and the Dockerfile do this for you):
 pip install --no-deps whisperx==3.7.9 && pip install nltk pandas "transformers<5"
 ```
+
+`pyproject.toml` is the only dependency list; the Dockerfile installs from it too.
 
 ## Development
 

@@ -1,10 +1,8 @@
-"""Audio decoding helpers built on faster-whisper's PyAV-backed decoder."""
+"""Audio decoding helpers: libsndfile windows over prepared WAVs, ffmpeg otherwise."""
 
 from __future__ import annotations
 
-import os
 import subprocess
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -16,17 +14,6 @@ SAMPLE_RATE = 16000
 # Copy WAV slices in bounded blocks so a 10-minute diarization window never
 # becomes a single ~40 MB float32 array in the Python process.
 _WAV_COPY_BLOCK_S = 10.0
-
-
-def load_audio(path: str) -> np.ndarray:
-    """Decode any ffmpeg-supported media file into a 16 kHz mono float32 array.
-
-    PyAV handles container demuxing and resampling, so audio and (already
-    audio-extracted) video inputs are both accepted.
-    """
-    from faster_whisper.audio import decode_audio
-
-    return decode_audio(path, sampling_rate=SAMPLE_RATE)
 
 
 def load_audio_at(path: str, sample_rate: int) -> np.ndarray:
@@ -335,11 +322,3 @@ def _extract_wav_window_ffmpeg(
         raise RuntimeError(
             f"ffmpeg failed to extract WAV window from {source_path}:\n{proc.stderr}"
         )
-
-
-def write_temp_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
-    """Persist decoded PCM to a temporary WAV file for pyannote I/O."""
-    fd, path = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    sf.write(path, audio, sample_rate)
-    return path

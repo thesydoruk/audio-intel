@@ -228,7 +228,7 @@ def merge_speaker_ids_by_embedding(
     Returns a map ``old_id → canonical_id`` (identity when no merge applies).
     Canonical ids prefer the lowest ``spk_N`` index in each cluster.
     """
-    ids = sorted(embeddings, key=_speaker_sort_key)
+    ids = sorted(embeddings, key=speaker_sort_key)
     if len(ids) <= 1:
         return {sid: sid for sid in ids}
 
@@ -245,7 +245,7 @@ def merge_speaker_ids_by_embedding(
         root_right = find(right)
         if root_left == root_right:
             return
-        if _speaker_sort_key(root_left) <= _speaker_sort_key(root_right):
+        if speaker_sort_key(root_left) <= speaker_sort_key(root_right):
             parent[root_right] = root_left
         else:
             parent[root_left] = root_right
@@ -411,7 +411,8 @@ def _best_temporal_overlap_match(
     return None
 
 
-def _speaker_sort_key(speaker_id: str) -> tuple[int, int | str]:
+def speaker_sort_key(speaker_id: str) -> tuple[int, int | str]:
+    """Order ``spk_N`` numerically (``spk_2`` before ``spk_10``), other ids after."""
     if speaker_id.startswith("spk_"):
         try:
             return (0, int(speaker_id[4:]))

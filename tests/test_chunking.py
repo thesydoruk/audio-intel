@@ -30,6 +30,13 @@ class BuildChunksTest(unittest.TestCase):
         self.assertAlmostEqual(chunks[0].start, 0.0, places=3)
         self.assertAlmostEqual(chunks[0].end, 2.2, places=3)
 
+    def test_long_gap_starts_a_new_chunk_when_max_gap_is_set(self):
+        speech = [region(0.0, 1.0), region(5.0, 6.0), region(6.5, 7.0)]
+        kwargs = dict(sample_rate=SR, total_samples=int(8 * SR), max_chunk_s=28, pad_s=0.0)
+        self.assertEqual(len(build_chunks(speech, **kwargs)), 1)
+        chunks = build_chunks(speech, max_gap_s=3.0, **kwargs)
+        self.assertEqual([(c.start, c.end) for c in chunks], [(0.0, 1.0), (5.0, 7.0)])
+
     def test_splits_when_span_exceeds_max(self):
         speech = [region(0.0, 1.5), region(1.8, 3.5)]
         chunks = build_chunks(speech, SR, total_samples=int(4 * SR), max_chunk_s=2, pad_s=0.0)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
+
+from audio_intel.diarization.chunks import speaker_sort_key
 from audio_intel.quality.normalization import normalize_segment_text
 
 
@@ -10,31 +13,59 @@ def overlap_seconds(a_start: float, a_end: float, b_start: float, b_end: float) 
     return max(0.0, min(a_end, b_end) - max(a_start, b_start))
 
 
-def _speaker_id_for_time(time_s: float, intervals: list[dict]) -> str | None:
-    """Map a timestamp to the diarization speaker active at that instant."""
-    for interval in intervals:
-        start = float(interval["start"])
-        end = float(interval["end"])
-        if start <= time_s < end:
-            return str(interval["speaker_id"])
-    return None
+class _IntervalIndex:
+    """Diarization turns sorted by start, with a running max end for range queries.
 
+    Lookups touch only the turns that can overlap the query instead of scanning
+    every turn for every word, which on a one-hour file is thousands of words
+    against thousands of turns.
+    """
 
-def _speaker_id_for_span(start: float, end: float, intervals: list[dict]) -> str | None:
-    """Pick the diarization speaker with the largest overlap on ``[start, end]``."""
-    best_id: str | None = None
-    best_overlap = 0.0
-    for interval in intervals:
-        overlap = overlap_seconds(
-            start,
-            end,
-            float(interval["start"]),
-            float(interval["end"]),
+    def __init__(self, intervals: list[dict]) -> None:
+        rows = sorted(
+            (
+                (float(item["start"]), float(item["end"]), str(item["speaker_id"]))
+                for item in intervals
+            ),
+            key=lambda row: row[0],
         )
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_id = str(interval["speaker_id"])
-    return best_id if best_overlap > 0 else None
+        self._starts = [row[0] for row in rows]
+        self._ends = [row[1] for row in rows]
+        self._speakers = [row[2] for row in rows]
+        self._max_end_upto: list[float] = []
+        running = float("-inf")
+        for end in self._ends:
+            running = max(running, end)
+            self._max_end_upto.append(running)
+
+    def __bool__(self) -> bool:
+        return bool(self._starts)
+
+    def _candidates(self, query_start: float, query_end: float) -> range:
+        """Indexes of turns that may intersect ``[query_start, query_end)``, ascending."""
+        hi = bisect_right(self._starts, query_end)
+        lo = hi
+        while lo > 0 and self._max_end_upto[lo - 1] > query_start:
+            lo -= 1
+        return range(lo, hi)
+
+    def speaker_at(self, time_s: float) -> str | None:
+        """Speaker active at ``time_s`` (first turn in start order wins)."""
+        for idx in self._candidates(time_s, time_s):
+            if self._starts[idx] <= time_s < self._ends[idx]:
+                return self._speakers[idx]
+        return None
+
+    def speaker_for_span(self, start: float, end: float) -> str | None:
+        """Speaker with the largest overlap on ``[start, end]``."""
+        best_id: str | None = None
+        best_overlap = 0.0
+        for idx in self._candidates(start, end):
+            overlap = overlap_seconds(start, end, self._starts[idx], self._ends[idx])
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_id = self._speakers[idx]
+        return best_id if best_overlap > 0 else None
 
 
 def _strip_internal_fields(seg: dict) -> dict:
@@ -46,9 +77,9 @@ def _strip_internal_fields(seg: dict) -> dict:
     return dict(seg)
 
 
-def _assign_speaker_by_overlap(seg: dict, intervals: list[dict]) -> dict:
+def _assign_speaker_by_overlap(seg: dict, index: _IntervalIndex) -> dict:
     """Attach one ``speaker_id`` to a segment using whole-span overlap (legacy path)."""
-    speaker_id = _speaker_id_for_span(float(seg["start"]), float(seg["end"]), intervals)
+    speaker_id = index.speaker_for_span(float(seg["start"]), float(seg["end"]))
     new_seg = _strip_internal_fields(seg)
     if speaker_id:
         new_seg["speaker_id"] = speaker_id
@@ -84,7 +115,7 @@ def _build_segment_from_words(base: dict, words: list[dict], speaker_id: str | N
     return new_seg
 
 
-def _assign_speakers_by_words(seg: dict, words: list[dict], intervals: list[dict]) -> list[dict]:
+def _assign_speakers_by_words(seg: dict, words: list[dict], index: _IntervalIndex) -> list[dict]:
     """Split/regroup one Whisper segment by per-word speaker assignment."""
     grouped: list[dict] = []
     current_words: list[dict] = []
@@ -94,9 +125,9 @@ def _assign_speakers_by_words(seg: dict, words: list[dict], intervals: list[dict
         w_start = float(word["start"])
         w_end = float(word["end"])
         midpoint = (w_start + w_end) / 2.0
-        speaker_id = _speaker_id_for_time(midpoint, intervals)
+        speaker_id = index.speaker_at(midpoint)
         if speaker_id is None:
-            speaker_id = _speaker_id_for_span(w_start, w_end, intervals)
+            speaker_id = index.speaker_for_span(w_start, w_end)
 
         if current_words and speaker_id != current_speaker:
             grouped.append(_build_segment_from_words(seg, current_words, current_speaker))
@@ -109,7 +140,7 @@ def _assign_speakers_by_words(seg: dict, words: list[dict], intervals: list[dict
         grouped.append(_build_segment_from_words(seg, current_words, current_speaker))
 
     if not grouped:
-        return [_assign_speaker_by_overlap(seg, intervals)]
+        return [_assign_speaker_by_overlap(seg, index)]
 
     return grouped
 
@@ -133,13 +164,14 @@ def assign_speakers_to_segments(
     if not intervals:
         return [_strip_internal_fields(seg) for seg in speech_segments], []
 
+    index = _IntervalIndex(intervals)
     assigned: list[dict] = []
     for seg in speech_segments:
         words = seg.get("words")
         if isinstance(words, list) and words:
-            assigned.extend(_assign_speakers_by_words(seg, words, intervals))
+            assigned.extend(_assign_speakers_by_words(seg, words, index))
         else:
-            assigned.append(_assign_speaker_by_overlap(seg, intervals))
+            assigned.append(_assign_speaker_by_overlap(seg, index))
 
     return assigned, build_speaker_roster(assigned)
 
@@ -159,5 +191,5 @@ def build_speaker_roster(segments: list[dict]) -> list[dict]:
         stats[sid]["segment_count"] += 1
 
     roster = list(stats.values())
-    roster.sort(key=lambda item: item["id"])
+    roster.sort(key=lambda item: speaker_sort_key(item["id"]))
     return roster

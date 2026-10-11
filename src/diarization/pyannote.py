@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from audio_intel.audio.decode import SAMPLE_RATE, extract_wav_window
+from audio_intel.audio.decode import SAMPLE_RATE, load_audio_window
 from audio_intel.diarization.chunks import (
     DiarizationChunk,
     link_local_speakers,
@@ -112,24 +110,43 @@ class SpeakerDiarizer:
         intervals.sort(key=lambda item: item["start"])
         return intervals
 
-    def _run_pipeline(self, pipeline, path: str) -> list[dict]:
-        diarization = pipeline(path)
+    def _run_pipeline(self, pipeline, audio: Any) -> list[dict]:
+        diarization = pipeline(audio)
         return self._normalize_pipeline_output(diarization)
 
-    def _diarize_file(self, path: str) -> list[dict]:
+    @staticmethod
+    def _load_window(path: str, start_s: float, duration_s: float) -> dict[str, Any]:
+        """Read a window of the prepared 16 kHz WAV as pyannote's in-memory input.
+
+        Handing pyannote a waveform skips its own file decoder (torchcodec +
+        FFmpeg libraries) and the temp WAV per chunk that it would otherwise need.
+        """
+        import torch
+
+        audio = load_audio_window(path, SAMPLE_RATE, start_s, duration_s)
+        if audio.size == 0:
+            raise RuntimeError(
+                f"No audio in {path} at {start_s:.1f}s (+{duration_s:.1f}s) for diarization"
+            )
+        return {"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": SAMPLE_RATE}
+
+    def _diarize_file(self, path: str, *, start_s: float = 0.0, duration_s: float) -> list[dict]:
+        audio = self._load_window(path, start_s, duration_s)
         index = self._pick_pipeline_index()
         with self._locks[index]:
             self._load_pipeline(index)
             pipeline = self._pipelines[index]
             assert pipeline is not None
             log.info(
-                "Diarization starting (pipeline %d/%d)",
+                "Diarization starting (pipeline %d/%d, %.1fs)",
                 index + 1,
                 self._count,
+                duration_s,
             )
             started = time.perf_counter()
-            intervals = self._run_pipeline(pipeline, path)
+            intervals = self._run_pipeline(pipeline, audio)
             elapsed = time.perf_counter() - started
+        del audio
         log.info(
             "Diarization finished in %.1fs (pipeline %d/%d): %d intervals, %d speakers",
             elapsed,
@@ -182,21 +199,10 @@ class SpeakerDiarizer:
         return embeddings
 
     def _diarize_chunk_file(self, path: str, chunk: DiarizationChunk) -> list[dict]:
-        fd, chunk_path = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        try:
-            extract_wav_window(
-                path,
-                chunk_path,
-                sample_rate=SAMPLE_RATE,
-                start_s=chunk.start_s,
-                duration_s=chunk.duration_s,
-            )
-            local_intervals = self._diarize_file(chunk_path)
-            return offset_intervals(local_intervals, chunk.start_s)
-        finally:
-            if os.path.exists(chunk_path):
-                os.unlink(chunk_path)
+        local_intervals = self._diarize_file(
+            path, start_s=chunk.start_s, duration_s=chunk.duration_s
+        )
+        return offset_intervals(local_intervals, chunk.start_s)
 
     def _diarize_chunked(
         self,
@@ -213,7 +219,7 @@ class SpeakerDiarizer:
             overlap_s=overlap_s,
         )
         if len(chunks) <= 1:
-            return self._diarize_file(path)
+            return self._diarize_file(path, duration_s=duration_s)
 
         embedder = self._resolve_link_embedder(link_embedder)
         workers = min(len(chunks), self._per_request_workers)
@@ -381,7 +387,7 @@ class SpeakerDiarizer:
 
         if self.cfg.diarization_chunk_s > 0 and duration_s > self.cfg.diarization_chunk_s:
             return self._diarize_chunked(path, duration_s, link_embedder=link_embedder)
-        return self._diarize_file(path)
+        return self._diarize_file(path, duration_s=duration_s)
 
 
 def _speaker_annotation(output):

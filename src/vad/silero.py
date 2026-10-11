@@ -8,12 +8,10 @@ to build bounded decode chunks.
 from __future__ import annotations
 
 import logging
-import threading
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from audio_intel.audio.decode import load_audio_at
+from audio_intel.common.model_pool import ModelPool
 from audio_intel.config import VADConfig
 from audio_intel.vad.regions import SpeechRegion
 from audio_intel.vad.streaming import (
@@ -24,29 +22,21 @@ from audio_intel.vad.streaming import (
     total_samples_from_duration,
 )
 
-if TYPE_CHECKING:
-    import numpy as np
-
 log = logging.getLogger("audio-intel")
 
 
-def load_audio_mono(audio_path: str | Path, sample_rate: int) -> np.ndarray:
-    """Decode audio to mono float32 PCM at ``sample_rate`` (PyAV-backed)."""
-    return load_audio_at(str(audio_path), sample_rate)
-
-
 class SileroVAD:
-    """Speech activity detection using Silero VAD (independent from Whisper)."""
+    """Speech activity detection using Silero VAD (independent from Whisper).
+
+    Silero is stateful per stream, so the pool hands each request its own copy
+    (a few MB each) instead of serializing every request behind one model.
+    """
 
     def __init__(self, config: VADConfig) -> None:
         self.config = config
-        self._model = None
-        self._infer_lock = threading.Lock()
+        self._pool: ModelPool[object] = ModelPool(self._create_model)
 
-    def ensure_ready(self) -> None:
-        """Load the Silero VAD model into memory."""
-        if self._model is not None:
-            return
+    def _create_model(self) -> object:
         try:
             from silero_vad import load_silero_vad
         except ImportError as exc:
@@ -54,16 +44,16 @@ class SileroVAD:
                 "silero-vad is required for speech detection. Install with: pip install silero-vad"
             ) from exc
 
-        with self._infer_lock:
-            if self._model is not None:
-                return
-            log.info("Loading Silero VAD model (onnx=%s)", self.config.use_onnx)
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=UserWarning, module=r"silero_vad|torchaudio"
-                )
-                self._model = load_silero_vad(onnx=self.config.use_onnx)
-            log.info("Silero VAD model loaded")
+        log.info("Loading Silero VAD model (onnx=%s)", self.config.use_onnx)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning, module=r"silero_vad|torchaudio")
+            model = load_silero_vad(onnx=self.config.use_onnx)
+        log.info("Silero VAD model loaded")
+        return model
+
+    def ensure_ready(self, num_workers: int = 1) -> None:
+        """Load ``num_workers`` Silero VAD copies into memory."""
+        self._pool.ensure_ready(num_workers)
 
     def detect(
         self,
@@ -88,14 +78,15 @@ class SileroVAD:
                 "silero-vad is required for speech detection. Install with: pip install silero-vad"
             ) from exc
 
-        if self._model is None:
+        if self._pool.size == 0:
             raise RuntimeError("Silero VAD is not loaded; call ensure_ready() at startup")
 
-        with self._infer_lock:
-            sample_rate = self.config.sample_rate
-            total_samples = total_samples_from_duration(duration_s, sample_rate)
+        sample_rate = self.config.sample_rate
+        total_samples = total_samples_from_duration(duration_s, sample_rate)
+        model = self._pool.acquire()
+        try:
             iterator = VADIterator(
-                self._model,
+                model,
                 threshold=self.config.threshold,
                 sampling_rate=sample_rate,
                 min_silence_duration_ms=self.config.min_silence_duration_ms,
@@ -119,57 +110,24 @@ class SileroVAD:
                     event = iterator(window, return_seconds=True, time_resolution=3)
                     if event is not None:
                         events.append(event)
+            speech_active_at_end = bool(iterator.triggered)
+        finally:
+            self._pool.release(model)
 
-            regions = regions_from_vad_iterator_events(
-                events,
-                duration_s=duration_s,
-                speech_active_at_end=iterator.triggered,
-            )
-            regions = filter_min_speech_duration(
-                regions,
-                min_speech_duration_ms=self.config.min_speech_duration_ms,
-            )
-            log.info(
-                "VAD streaming finished: %.1fs audio, %d windows (%ds blocks), %d speech regions",
-                duration_s,
-                window_count,
-                int(self.config.stream_block_s),
-                len(regions),
-            )
-            return regions
-
-    def detect_waveform(self, waveform: np.ndarray, sample_rate: int) -> list[SpeechRegion]:
-        """Run VAD on an already-decoded mono float32 waveform."""
-        try:
-            import torch
-            from silero_vad import get_speech_timestamps
-        except ImportError as exc:
-            raise ImportError(
-                "silero-vad is required for speech detection. Install with: pip install silero-vad"
-            ) from exc
-
-        if self._model is None:
-            raise RuntimeError("Silero VAD is not loaded; call ensure_ready() at startup")
-
-        with self._infer_lock:
-            tensor = torch.from_numpy(waveform)
-
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", category=UserWarning, module=r"silero_vad|torchaudio"
-                )
-                timestamps = get_speech_timestamps(
-                    tensor,
-                    self._model,
-                    sampling_rate=sample_rate,
-                    threshold=self.config.threshold,
-                    min_speech_duration_ms=self.config.min_speech_duration_ms,
-                    min_silence_duration_ms=self.config.min_silence_duration_ms,
-                    speech_pad_ms=self.config.speech_pad_ms,
-                    return_seconds=True,
-                )
-
-            return [
-                SpeechRegion(start=float(item["start"]), end=float(item["end"]))
-                for item in timestamps
-            ]
+        regions = regions_from_vad_iterator_events(
+            events,
+            duration_s=duration_s,
+            speech_active_at_end=speech_active_at_end,
+        )
+        regions = filter_min_speech_duration(
+            regions,
+            min_speech_duration_ms=self.config.min_speech_duration_ms,
+        )
+        log.info(
+            "VAD streaming finished: %.1fs audio, %d windows (%ds blocks), %d speech regions",
+            duration_s,
+            window_count,
+            int(self.config.stream_block_s),
+            len(regions),
+        )
+        return regions

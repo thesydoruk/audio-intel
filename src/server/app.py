@@ -21,6 +21,11 @@ also be on for the corresponding stage to run.
 Top-level ``speakers`` roster (when diarization ran): ``id``, ``speech_seconds``,
 ``segment_count``, and — when enough speech — ``embedding`` (L2-normalized) with
 ``embedding_model``. Vectors from different models are not comparable.
+
+Models load in the lifespan handler, so importing this module is cheap and the
+server only accepts connections once Whisper and VAD are in memory. Requests
+beyond ``MAX_CONCURRENT_REQUESTS`` wait in line; past ``MAX_QUEUED_REQUESTS``
+they get ``503`` at once instead of tying up a server thread.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from audio_intel.config import load_config
 from audio_intel.server.transcription import (
@@ -38,8 +45,8 @@ from audio_intel.server.transcription import (
     normalize_language,
     parse_speaker_spans,
 )
-from audio_intel.transcribe.service import Transcriber
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from audio_intel.transcribe.service import ServiceBusyError, Transcriber
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 cfg = load_config()
@@ -54,13 +61,43 @@ try:
 except importlib.metadata.PackageNotFoundError:  # running from a bare source tree
     VERSION = "0+unknown"
 
-app = FastAPI(title="audio-intel", version=VERSION)
-transcriber = Transcriber(cfg)
+# Copy uploads to disk in 1 MiB blocks (the whole file is never held in memory).
+_UPLOAD_COPY_BLOCK = 1024 * 1024
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.transcriber = Transcriber(cfg)
+    yield
+
+
+app = FastAPI(title="audio-intel", version=VERSION, lifespan=lifespan)
+
+
+def _transcriber(request: Request) -> Transcriber:
+    return request.app.state.transcriber
+
+
+def _spool_upload(file: UploadFile) -> str:
+    """Write the multipart upload to a temp file and return its path."""
+    suffix = os.path.splitext(file.filename or "")[1] or ".bin"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        shutil.copyfileobj(file.file, tmp, length=_UPLOAD_COPY_BLOCK)
+        return tmp.name
+
+
+def _busy(exc: ServiceBusyError) -> HTTPException:
+    log.warning("Rejecting request: %s", exc)
+    return HTTPException(status_code=503, detail=str(exc), headers={"Retry-After": "30"})
 
 
 @app.get("/health")
-def health() -> dict:
-    """Liveness probe used by the docker healthcheck."""
+async def health() -> dict:
+    """Liveness probe used by the docker healthcheck.
+
+    Async on purpose: it must answer even while every worker thread of the
+    server is busy with (or waiting on) a transcription.
+    """
     return {
         "status": "ok",
         "version": VERSION,
@@ -75,6 +112,7 @@ def health() -> dict:
 
 @app.post("/v1/audio/transcriptions")
 def transcribe(
+    request: Request,
     file: UploadFile = File(...),
     model: str = Form("whisper-1"),
     response_format: str = Form("verbose_json"),
@@ -97,7 +135,10 @@ def transcribe(
     """
     del model, temperature  # OpenAI-compatible fields; ignored by this service.
 
-    forced = normalize_language(language)
+    try:
+        forced = normalize_language(language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     aed_overrides = build_aed_overrides(
         aed_min_score=aed_min_score,
         aed_top_k=aed_top_k,
@@ -106,10 +147,7 @@ def transcribe(
         aed_exclude_speech=aed_exclude_speech,
     )
 
-    suffix = os.path.splitext(file.filename or "")[1] or ".bin"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp, length=1024 * 1024)
-        tmp_path = tmp.name
+    tmp_path = _spool_upload(file)
     size_kb = os.path.getsize(tmp_path) / 1024
     log.info(
         "Transcription request: %s (%.1f KB, language=%s, align=%s, "
@@ -124,7 +162,7 @@ def transcribe(
     )
 
     try:
-        result = transcriber.transcribe(
+        result = _transcriber(request).transcribe(
             tmp_path,
             override_language=forced,
             align=align,
@@ -142,6 +180,8 @@ def transcribe(
             len(result.get("speakers") or []),
             result.get("alignment_failed"),
         )
+    except ServiceBusyError as exc:
+        raise _busy(exc) from exc
     finally:
         os.unlink(tmp_path)
 
@@ -153,6 +193,7 @@ def transcribe(
 
 @app.post("/v1/speakers/embed")
 def embed_speakers(
+    request: Request,
     file: UploadFile = File(...),
     speakers: str = Form(...),
     min_speech_s: float = Form(3.0),
@@ -171,17 +212,16 @@ def embed_speakers(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    suffix = os.path.splitext(file.filename or "")[1] or ".bin"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        shutil.copyfileobj(file.file, tmp, length=1024 * 1024)
-        tmp_path = tmp.name
+    tmp_path = _spool_upload(file)
     try:
-        result = transcriber.embed_speakers(
+        result = _transcriber(request).embed_speakers(
             tmp_path,
             spans_by_speaker,
             min_speech_s=min_speech_s,
             max_clip_s=max_clip_s,
         )
+    except ServiceBusyError as exc:
+        raise _busy(exc) from exc
     finally:
         os.unlink(tmp_path)
     log.info(

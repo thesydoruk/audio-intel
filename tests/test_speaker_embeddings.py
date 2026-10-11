@@ -63,7 +63,7 @@ class SpeakerClipFromPathTest(unittest.TestCase):
         cfg = load_config()
         embedder = SpeakerEmbedder(cfg)
         with (
-            mock.patch("audio_intel.audio.decode.load_audio") as load_full,
+            mock.patch("audio_intel.audio.decode.load_audio_at") as load_full,
             mock.patch.object(embedder, "_build_speaker_clip_from_path", return_value=None),
         ):
             out = embedder.embed_speakers(

@@ -49,7 +49,6 @@ jobs:
             image:
               - Dockerfile
               - pyproject.toml
-              - requirements.txt
               - scripts/image-smoke.sh
               - .github/workflows/ci.yml
 

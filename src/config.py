@@ -71,6 +71,7 @@ class Config:
     cpu_threads: int
     whisper_parallel_workers: int
     max_concurrent_requests: int
+    max_queued_requests: int
     download_root: str
     forced_language: str | None
     lang_min_prob: float
@@ -87,6 +88,7 @@ class Config:
     vad_use_onnx: bool
     max_chunk_s: float
     chunk_pad_s: float
+    max_chunk_gap_s: float
     aed_enabled: bool
     aed_device: str
     aed_sample_rate: int
@@ -161,6 +163,7 @@ def load_config() -> Config:
         cpu_threads=_int("ASR_CPU_THREADS", 2),
         whisper_parallel_workers=max(1, min(_int("ASR_PARALLEL_WORKERS", 1), 8)),
         max_concurrent_requests=max(1, min(_int("MAX_CONCURRENT_REQUESTS", 2), 8)),
+        max_queued_requests=max(0, _int("MAX_QUEUED_REQUESTS", 8)),
         download_root=download_root,
         forced_language=forced,
         lang_min_prob=_float("ASR_LANGUAGE_MIN_CONFIDENCE", 0.5),
@@ -178,8 +181,11 @@ def load_config() -> Config:
         vad_use_onnx=_bool("VAD_USE_ONNX", True),
         max_chunk_s=_float("VAD_MAX_CHUNK_S", 28.0),
         chunk_pad_s=_float("VAD_CHUNK_PAD_S", 0.2),
+        max_chunk_gap_s=_float("VAD_MAX_CHUNK_GAP_S", 0.0),
         aed_enabled=_bool("SOUND_EVENTS_ENABLED", True),
-        aed_device=_str("SOUND_EVENTS_DEVICE", "cpu"),
+        # Same default as the other stages; panns_inference falls back to CPU
+        # by itself when no GPU is visible.
+        aed_device=_str("SOUND_EVENTS_DEVICE", "cuda"),
         aed_sample_rate=_int("SOUND_EVENTS_SAMPLE_RATE", 32000),
         aed_window_s=_float("SOUND_EVENTS_WINDOW_S", 60.0),
         aed_overlap_s=_float("SOUND_EVENTS_OVERLAP_S", 1.0),

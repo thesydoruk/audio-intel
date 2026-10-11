@@ -122,7 +122,7 @@ class RequestFeatureFlagsTest(unittest.TestCase):
                 )
 
                 pool_cls.assert_called_once_with(max_workers=2)
-                release_mem.assert_called_once()
+                release_mem.assert_not_called()  # only lazy model loads flush the cache
                 apply_diarization.assert_not_called()
                 detect_sounds.assert_not_called()
                 pool.submit.assert_any_call(

@@ -148,5 +148,48 @@ class SpeakerMergeTests(unittest.TestCase):
         self.assertEqual(roster, [])
 
 
+class IntervalIndexTest(unittest.TestCase):
+    def test_lookups_match_a_linear_scan_on_overlapping_turns(self) -> None:
+        from audio_intel.diarization.merge import _IntervalIndex, overlap_seconds
+
+        intervals = [
+            {"start": 0.0, "end": 10.0, "speaker_id": "spk_0"},
+            {"start": 2.0, "end": 3.0, "speaker_id": "spk_1"},
+            {"start": 4.0, "end": 5.0, "speaker_id": "spk_2"},
+            {"start": 9.5, "end": 12.0, "speaker_id": "spk_3"},
+            {"start": 20.0, "end": 21.0, "speaker_id": "spk_4"},
+        ]
+        index = _IntervalIndex(intervals)
+
+        def scan_at(t):
+            for item in intervals:
+                if item["start"] <= t < item["end"]:
+                    return item["speaker_id"]
+            return None
+
+        def scan_span(s, e):
+            best, best_overlap = None, 0.0
+            for item in intervals:
+                o = overlap_seconds(s, e, item["start"], item["end"])
+                if o > best_overlap:
+                    best, best_overlap = item["speaker_id"], o
+            return best
+
+        for t in [-1.0, 0.0, 2.5, 4.0, 5.0, 9.6, 11.9, 12.0, 15.0, 20.0, 21.0, 30.0]:
+            self.assertEqual(index.speaker_at(t), scan_at(t), t)
+        for s, e in [(0.0, 1.0), (2.4, 2.6), (4.5, 9.9), (9.9, 11.0), (12.0, 13.0), (19.0, 22.0)]:
+            self.assertEqual(index.speaker_for_span(s, e), scan_span(s, e), (s, e))
+
+    def test_roster_orders_speaker_ids_numerically(self) -> None:
+        segments = [
+            {"start": 0.0, "end": 1.0, "speaker_id": "spk_10"},
+            {"start": 1.0, "end": 2.0, "speaker_id": "spk_2"},
+            {"start": 2.0, "end": 3.0, "speaker_id": "guest"},
+        ]
+        self.assertEqual(
+            [row["id"] for row in build_speaker_roster(segments)], ["spk_2", "spk_10", "guest"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

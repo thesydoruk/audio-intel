@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+import importlib.metadata
+
+try:
+    __version__ = importlib.metadata.version("audio-intel")
+except importlib.metadata.PackageNotFoundError:  # bare source tree
+    __version__ = "0+unknown"
 __author__ = "Valerii Sydoruk"
 __license__ = "MIT"
 

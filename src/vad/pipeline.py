@@ -73,9 +73,9 @@ class VadPipeline:
         """Build a pipeline from HTTP service ``Config`` VAD thresholds."""
         return cls(_vad_config_from_server(cfg))
 
-    def ensure_ready(self) -> None:
-        """Pre-load the Silero VAD model."""
-        self._vad.ensure_ready()
+    def ensure_ready(self, num_workers: int = 1) -> None:
+        """Pre-load ``num_workers`` Silero VAD copies (one per concurrent request)."""
+        self._vad.ensure_ready(num_workers)
 
     def detect_regions(self, whisper_path: str, duration_s: float) -> list[SpeechRegion]:
         """Run Silero VAD on the prepared 16 kHz workspace WAV."""
@@ -101,6 +101,7 @@ class VadPipeline:
         *,
         max_chunk_s: float,
         chunk_pad_s: float,
+        max_gap_s: float = 0.0,
     ) -> list[Chunk]:
         """Merge VAD samples into decode chunks with ``chunk_pad_s`` overlap."""
         samples = regions_to_vad_samples(regions, SAMPLE_RATE)
@@ -110,6 +111,7 @@ class VadPipeline:
             total_samples_from_duration(duration_s, SAMPLE_RATE),
             max_chunk_s,
             chunk_pad_s,
+            max_gap_s,
         )
 
     def prepare_chunks_for_server(
@@ -129,4 +131,5 @@ class VadPipeline:
             duration_s,
             max_chunk_s=cfg.max_chunk_s,
             chunk_pad_s=cfg.chunk_pad_s,
+            max_gap_s=cfg.max_chunk_gap_s,
         )

@@ -14,7 +14,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from audio_intel.audio.chunking import Chunk
@@ -43,7 +45,7 @@ log = logging.getLogger("audio-intel")
 
 
 def _release_accelerator_memory() -> None:
-    """Best-effort GPU/host cleanup between heavy post-ASR stages."""
+    """Best-effort GPU/host cleanup before a lazy model load."""
     import gc
 
     gc.collect()
@@ -66,6 +68,10 @@ class _ChunkTranscription:
     languages: list[str]
 
 
+class ServiceBusyError(RuntimeError):
+    """Raised when more requests are waiting than ``MAX_QUEUED_REQUESTS`` allows."""
+
+
 class Transcriber:
     """Holds loaded models and runs up to N HTTP pipeline requests in parallel."""
 
@@ -73,6 +79,8 @@ class Transcriber:
         self.cfg = cfg
         concurrent = cfg.max_concurrent_requests
         self._request_semaphore = threading.Semaphore(concurrent)
+        self._queue_lock = threading.Lock()
+        self._queued = 0
         per_request_workers = cfg.whisper_parallel_workers
         whisper_pool_size = per_request_workers * concurrent
         log.info(
@@ -91,7 +99,7 @@ class Transcriber:
         log.info("Whisper model%s loaded", "" if whisper_pool_size == 1 else " copies")
 
         self._vad = VadPipeline.from_server(cfg)
-        self._vad.ensure_ready()
+        self._vad.ensure_ready(concurrent)
 
         # AED / pyannote stay lazy until post-ASR so Whisper peak VRAM matches the
         # older in-repo server (Whisper + VAD only at startup on shared GPUs).
@@ -126,6 +134,31 @@ class Transcriber:
                 ", ".join(self._aligners),
             )
 
+    @contextmanager
+    def _request_slot(self) -> Iterator[None]:
+        """Wait for a processing slot, or fail fast when the queue is full.
+
+        Each waiting request holds one of the HTTP server's worker threads, so an
+        unbounded queue would eventually starve ``/health`` and every other route.
+        """
+        if not self._request_semaphore.acquire(blocking=False):
+            with self._queue_lock:
+                if self._queued >= self.cfg.max_queued_requests:
+                    raise ServiceBusyError(
+                        f"{self._queued} request(s) already waiting "
+                        f"(MAX_QUEUED_REQUESTS={self.cfg.max_queued_requests})"
+                    )
+                self._queued += 1
+            try:
+                self._request_semaphore.acquire()
+            finally:
+                with self._queue_lock:
+                    self._queued -= 1
+        try:
+            yield
+        finally:
+            self._request_semaphore.release()
+
     def transcribe(
         self,
         path: str,
@@ -138,7 +171,7 @@ class Transcriber:
         aed_debug_top_n: int = 0,
     ) -> dict:
         """Transcribe a media file into a verbose-JSON-shaped dict."""
-        with self._request_semaphore:
+        with self._request_slot():
             return self._run(
                 path,
                 override_language,
@@ -252,7 +285,6 @@ class Transcriber:
 
             post_started = time.perf_counter()
             if run_diarization and run_aed:
-                _release_accelerator_memory()
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     diar_future = pool.submit(
                         self._apply_diarization,
@@ -268,10 +300,8 @@ class Transcriber:
                     speech_segments, speakers = diar_future.result()
                     sound_event_segments, aed_debug = aed_future.result()
             elif run_diarization:
-                _release_accelerator_memory()
                 speech_segments, speakers = self._apply_diarization(media, speech_segments)
             elif run_aed:
-                _release_accelerator_memory()
                 sound_event_segments, aed_debug = self._detect_sounds(
                     media,
                     aed_overrides,
@@ -641,7 +671,7 @@ class Transcriber:
         """
         if self.embedder is None:
             raise RuntimeError("Speaker embeddings are disabled (SPEAKERS_ENABLED=0)")
-        with self._request_semaphore:
+        with self._request_slot():
             self._ensure_embedder_ready()
             with MediaWorkspace.prepare(path) as media:
                 from audio_intel.audio.decode import SAMPLE_RATE

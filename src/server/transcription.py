@@ -4,45 +4,24 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
 from typing import Any
 
-
-@dataclass
-class TranscriptionParams:
-    """Normalized per-request transcription options."""
-
-    override_language: str | None
-    align: bool
-    diarize: bool
-    sound_events: bool
-    aed_overrides: dict[str, float | int | bool | None]
-    aed_debug_top_n: int
-    response_format: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TranscriptionParams:
-        return cls(
-            override_language=data.get("override_language"),
-            align=bool(data.get("align", False)),
-            diarize=bool(data.get("diarize", False)),
-            sound_events=bool(data.get("sound_events", False)),
-            aed_overrides=dict(data.get("aed_overrides") or {}),
-            aed_debug_top_n=int(data.get("aed_debug_top_n", 0)),
-            response_format=str(data.get("response_format", "verbose_json")),
-        )
+from faster_whisper.tokenizer import _LANGUAGE_CODES
 
 
 def normalize_language(language: str | None) -> str | None:
-    """Map OpenAI-style language form values to a forced code or ``None`` (auto)."""
+    """Map OpenAI-style language form values to a forced code or ``None`` (auto).
+
+    Raises ``ValueError`` for codes Whisper does not know, so the client gets a
+    400 instead of a 500 from deep inside faster-whisper.
+    """
     if not language:
         return None
-    stripped = language.strip()
-    if stripped.lower() in {"", "auto"}:
+    stripped = language.strip().lower()
+    if stripped in {"", "auto"}:
         return None
+    if stripped not in _LANGUAGE_CODES:
+        raise ValueError(f"unsupported language code: {language.strip()!r}")
     return stripped
 
 

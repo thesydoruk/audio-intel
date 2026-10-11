@@ -182,6 +182,10 @@ def overall_confidence(segments: list[dict]) -> float:
         if seg.get("kind") != "speech":
             continue
         weight = max(float(seg["end"]) - float(seg["start"]), 1e-3)
-        acc += float(seg.get("confidence", 0.0)) * weight
+        confidence = seg.get("confidence")
+        if confidence is None:
+            logprob = seg.get("avg_logprob")
+            confidence = logprob_to_confidence(float(logprob)) if logprob is not None else 0.0
+        acc += float(confidence) * weight
         total_weight += weight
     return round(acc / total_weight, 3) if total_weight > 0 else 0.0

@@ -1,14 +1,13 @@
 """Thread-safe pool of lazily loaded model copies.
 
-Used for Whisper and WhisperX align models when multiple threads or worker
-processes need concurrent inference without sharing a single model instance.
+Used for Whisper, Silero VAD, PANNs and WhisperX align models when several
+threads need concurrent inference without sharing one model instance.
 """
 
 from __future__ import annotations
 
 import queue
 import threading
-import time
 from collections.abc import Callable
 from typing import Generic, TypeVar
 
@@ -18,41 +17,40 @@ T = TypeVar("T")
 class ModelPool(Generic[T]):
     """Load N copies of a model and hand them out via acquire/release.
 
-    With ``num_workers == 1`` the pool keeps a single model and skips the queue.
-    With ``num_workers > 1`` callers must pair every ``acquire()`` with ``release()``.
+    Every ``acquire()`` must be paired with ``release()``. ``acquire()`` blocks
+    while all copies are checked out, so a single-copy pool also serializes its
+    callers instead of letting two threads drive the same model at once.
     """
 
     def __init__(self, factory: Callable[[], T]) -> None:
         self._factory = factory
         self._models: list[T] = []
-        self._queue: queue.Queue[T] | None = None
+        self._queue: queue.Queue[T] = queue.Queue()
         self._init_lock = threading.Lock()
 
+    @property
+    def size(self) -> int:
+        """Number of loaded copies."""
+        return len(self._models)
+
     def ensure_ready(self, num_workers: int = 1) -> None:
-        """Create models up to ``num_workers`` (idempotent, thread-safe)."""
+        """Grow the pool to ``num_workers`` copies (idempotent, thread-safe).
+
+        Copies already checked out stay valid: new ones are only ever added.
+        """
         num_workers = max(1, num_workers)
         with self._init_lock:
             while len(self._models) < num_workers:
-                self._models.append(self._factory())
-                if len(self._models) < num_workers:
-                    time.sleep(0.25)
-
-            if num_workers > 1:
-                self._queue = queue.Queue()
-                for model in self._models[:num_workers]:
-                    self._queue.put(model)
-            else:
-                self._queue = None
+                model = self._factory()
+                self._models.append(model)
+                self._queue.put(model)
 
     def acquire(self) -> T:
-        """Borrow a model; blocks when all copies are checked out (multi-worker mode)."""
-        if self._queue is not None:
-            return self._queue.get()
+        """Borrow a model; blocks when all copies are checked out."""
         if not self._models:
             self.ensure_ready(1)
-        return self._models[0]
+        return self._queue.get()
 
     def release(self, model: T) -> None:
-        """Return a model to the pool (no-op in single-worker mode)."""
-        if self._queue is not None:
-            self._queue.put(model)
+        """Return a model to the pool."""
+        self._queue.put(model)

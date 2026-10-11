@@ -644,39 +644,3 @@ class AudioEventDetector:
             p.top_k,
         )
         return events, debug
-
-    def detect(
-        self,
-        waveform: np.ndarray,
-        *,
-        params: AedParams | None = None,
-        debug_top_n: int = 0,
-    ) -> tuple[list[dict], list[dict]]:
-        """Detect non-speech sound events in a 32 kHz mono waveform.
-
-        @param params — effective thresholds; defaults to the server config.
-        @param debug_top_n — when > 0, also return the top-N peak-scoring classes
-          (unfiltered) for diagnostics/tuning.
-        @returns ``(events, debug_peaks)``. ``debug_peaks`` is empty unless
-          ``debug_top_n`` > 0.
-        """
-        if waveform.size == 0:
-            return [], []
-        p = params or AedParams.from_config(self.cfg)
-        started = time.perf_counter()
-        duration = waveform.shape[0] / self.cfg.aed_sample_rate
-        events, debug = self._detect_chunked(
-            path=None,
-            waveform=waveform,
-            duration_s=duration,
-            params=p,
-            debug_top_n=debug_top_n,
-        )
-        log.info(
-            "AED post-processing in %.1fs: %d events (min_score=%.2f, top_k=%d)",
-            time.perf_counter() - started,
-            len(events),
-            p.min_score,
-            p.top_k,
-        )
-        return events, debug

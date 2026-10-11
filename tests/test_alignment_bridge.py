@@ -258,5 +258,60 @@ class ApplyAlignmentPerLanguageTest(unittest.TestCase):
         self.assertEqual(updated[1]["text"], "hello")
 
 
+class AlignedConfidenceTest(unittest.TestCase):
+    """Alignment moves timestamps only; confidence must survive into the response."""
+
+    def test_confidence_and_speaker_carry_over_and_summary_does_not_crash(self) -> None:
+        from audio_intel.transcribe.segments import apply_aligned_segments, overall_confidence
+        from audio_intel.types import SpeechSegment
+
+        aligner = CTCAligner(AlignmentConfig(), language="en", device="cpu")
+        original = SpeechSegment(
+            id=0,
+            start=0.0,
+            end=1.0,
+            text="hi",
+            avg_logprob=-0.1,
+            no_speech_prob=0.0,
+            compression_ratio=1.0,
+            confidence=0.9,
+            speaker_id="spk_0",
+        )
+        mapped = aligner._map_aligned_segments(
+            [original],
+            [
+                {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hi",
+                    "words": [{"word": "hi", "start": 0.1, "end": 0.5, "score": 0.8}],
+                }
+            ],
+        )
+        self.assertEqual(mapped[0].confidence, 0.9)
+        self.assertEqual(mapped[0].speaker_id, "spk_0")
+
+        speech = [{"kind": "speech", "start": 0.0, "end": 1.0, "text": "hi", "confidence": 0.9}]
+        merged, _ = apply_aligned_segments(speech, mapped)
+        self.assertEqual(merged[0]["confidence"], 0.9)
+        self.assertEqual(overall_confidence(merged), 0.9)
+
+    def test_summary_derives_missing_confidence_from_logprob(self) -> None:
+        from audio_intel.transcribe.segments import overall_confidence
+
+        segments = [
+            {
+                "kind": "speech",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "a",
+                "confidence": None,
+                "avg_logprob": 0.0,
+            },
+            {"kind": "speech", "start": 1.0, "end": 2.0, "text": "b", "confidence": None},
+        ]
+        self.assertEqual(overall_confidence(segments), 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

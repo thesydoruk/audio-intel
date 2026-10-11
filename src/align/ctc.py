@@ -15,6 +15,7 @@ from typing import Any
 
 from audio_intel.common.model_pool import ModelPool
 from audio_intel.config import AlignmentConfig
+from audio_intel.transcribe.segments import logprob_to_confidence
 from audio_intel.types import SpeechSegment, TranscriptResult, Word
 
 
@@ -160,6 +161,12 @@ class CTCAligner:
 
             text = str(seg.get("text", "")).strip()
             alignment_failed = bool(text) and not words
+            avg_logprob = float(seg.get("avg_logprob", fallback.avg_logprob if fallback else -0.5))
+            # Alignment only moves timestamps: Whisper's confidence and the speaker
+            # label (if diarization already ran) carry over unchanged.
+            confidence = fallback.confidence if fallback else None
+            if confidence is None:
+                confidence = logprob_to_confidence(avg_logprob)
 
             mapped.append(
                 SpeechSegment(
@@ -167,15 +174,15 @@ class CTCAligner:
                     start=start,
                     end=end,
                     text=text,
-                    avg_logprob=float(
-                        seg.get("avg_logprob", fallback.avg_logprob if fallback else -0.5)
-                    ),
+                    avg_logprob=avg_logprob,
                     no_speech_prob=float(fallback.no_speech_prob if fallback else 0.0),
                     compression_ratio=float(fallback.compression_ratio if fallback else 1.0),
                     words=words,
                     language=fallback.language if fallback else None,
                     language_probability=(fallback.language_probability if fallback else None),
                     alignment_failed=alignment_failed,
+                    speaker_id=fallback.speaker_id if fallback else None,
+                    confidence=confidence,
                 )
             )
 

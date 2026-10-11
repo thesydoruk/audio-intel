@@ -87,12 +87,6 @@ class WhisperEngine:
         self.validate_cuda(self.runtime.device)
         self._pool.ensure_ready(num_workers)
 
-    @property
-    def primary_model(self) -> WhisperModel:
-        """Return the first loaded model (for callers that manage lifecycle themselves)."""
-        self._pool.ensure_ready(1)
-        return self._pool.acquire()
-
     def _create_model(self) -> WhisperModel:
         kwargs: dict[str, Any] = {
             "device": self.runtime.device,

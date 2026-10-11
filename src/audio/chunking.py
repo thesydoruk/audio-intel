@@ -26,13 +26,16 @@ def build_chunks(
     total_samples: int,
     max_chunk_s: float,
     pad_s: float,
+    max_gap_s: float = 0.0,
 ) -> list[Chunk]:
     """Merge consecutive VAD speech regions into chunks no longer than ``max_chunk_s``.
 
     Regions are merged greedily while the running span (first region start to the
     candidate region end) stays within ``max_chunk_s``; otherwise a new chunk is
-    started. Each resulting chunk is padded by ``pad_s`` on both sides (clamped to
-    the audio bounds) so word edges near the cut are not clipped.
+    started. With ``max_gap_s > 0`` a silence longer than that also starts a new
+    chunk, so Whisper is not handed long stretches of silence to hallucinate on.
+    Each resulting chunk is padded by ``pad_s`` on both sides (clamped to the
+    audio bounds) so word edges near the cut are not clipped.
 
     @param speech — VAD output: ``[{"start": samples, "end": samples}, ...]``.
     @returns time-ordered, non-empty chunks.
@@ -50,7 +53,9 @@ def build_chunks(
         end_s = region["end"] / sample_rate
         if cur_start is None:
             cur_start, cur_end = start_s, end_s
-        elif end_s - cur_start <= max_chunk_s:
+        elif end_s - cur_start <= max_chunk_s and (
+            max_gap_s <= 0 or start_s - float(cur_end or 0.0) <= max_gap_s
+        ):
             cur_end = end_s
         else:
             merged.append(Chunk(cur_start, cur_end))  # type: ignore[arg-type]

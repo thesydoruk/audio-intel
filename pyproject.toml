@@ -59,7 +59,8 @@ server = [
 align = ["whisperx>=3.3.0"]
 vad = ["silero-vad>=5.1"]
 all = ["audio-intel[server,vad]"]
-dev = ["pytest>=8.0", "ruff>=0.4", "pre-commit>=4.0"]
+# ruff matches .pre-commit-config.yaml so CI and the hook format identically.
+dev = ["pytest>=8.0", "ruff==0.11.13", "pre-commit>=4.0"]
 
 [project.urls]
 Homepage = "https://github.com/thesydoruk/audio-intel"

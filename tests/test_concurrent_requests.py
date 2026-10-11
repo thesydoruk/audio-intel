@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -12,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from audio_intel.config import load_config
-from audio_intel.transcribe.service import Transcriber  # noqa: E402
+from audio_intel.transcribe.service import ServiceBusyError, Transcriber  # noqa: E402
 
 
 class ConcurrentRequestsTest(unittest.TestCase):
@@ -81,6 +82,48 @@ class ConcurrentRequestsTest(unittest.TestCase):
                 self.assertFalse(thread.is_alive())
 
         self.assertEqual(peak_active, 2)
+
+    def test_rejects_requests_beyond_the_queue_limit(self) -> None:
+        cfg = replace(
+            load_config(), max_concurrent_requests=1, max_queued_requests=1, aed_enabled=False
+        )
+
+        with (
+            mock.patch("audio_intel.transcribe.service.WhisperEngine"),
+            mock.patch("audio_intel.transcribe.service.VadPipeline") as vad_cls,
+        ):
+            vad_cls.from_server.return_value = mock.MagicMock()
+            transcriber = Transcriber(cfg)
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_run(*args, **kwargs):
+            started.set()
+            release.wait(5)
+            return {"ok": True}
+
+        with mock.patch.object(transcriber, "_run", side_effect=slow_run):
+            running = threading.Thread(target=transcriber.transcribe, args=("a.wav",))
+            running.start()
+            self.assertTrue(started.wait(2))
+            # One request may wait in line ...
+            waiting = threading.Thread(target=transcriber.transcribe, args=("b.wav",))
+            waiting.start()
+            for _ in range(100):
+                with transcriber._queue_lock:
+                    if transcriber._queued == 1:
+                        break
+                time.sleep(0.01)
+            # ... the next one is turned away at once instead of holding a thread.
+            with self.assertRaises(ServiceBusyError):
+                transcriber.transcribe("c.wav")
+            release.set()
+            running.join(2)
+            waiting.join(2)
+
+        with transcriber._queue_lock:
+            self.assertEqual(transcriber._queued, 0)
 
 
 if __name__ == "__main__":

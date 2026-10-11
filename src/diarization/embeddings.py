@@ -98,39 +98,6 @@ class SpeakerEmbedder:
                 self._dimension or "?",
             )
 
-    @staticmethod
-    def _build_speaker_clip(
-        audio: np.ndarray,
-        spans: list[tuple[float, float]],
-        *,
-        sample_rate: int,
-        min_speech_s: float,
-        max_clip_s: float,
-    ) -> np.ndarray | None:
-        """Concatenate up to ``max_clip_s`` of speech for one speaker."""
-        total = sum(max(0.0, end - start) for start, end in spans)
-        if total < min_speech_s:
-            return None
-
-        chunks: list[np.ndarray] = []
-        budget = max_clip_s
-        for start, end in sorted(spans):
-            if budget <= 0:
-                break
-            take = min(max(0.0, end - start), budget)
-            if take <= 0:
-                continue
-            start_i = int(start * sample_rate)
-            end_i = int((start + take) * sample_rate)
-            if end_i <= start_i:
-                continue
-            chunks.append(audio[start_i:end_i])
-            budget -= take
-
-        if not chunks:
-            return None
-        return np.concatenate(chunks)
-
     def _normalize_embedding(self, vector) -> list[float] | None:
         arr = np.asarray(vector, dtype=np.float32).reshape(-1)
         if arr.size == 0 or not np.all(np.isfinite(arr)):
@@ -184,30 +151,6 @@ class SpeakerEmbedder:
             )
             return None
         return sid, normalized
-
-    def embed_speaker_spans(
-        self,
-        audio: np.ndarray,
-        spans: list[tuple[float, float]],
-        *,
-        sample_rate: int,
-        min_speech_s: float = 0.5,
-        max_clip_s: float = 30.0,
-    ) -> list[float] | None:
-        """Embed one speaker from explicit time spans inside an in-memory waveform."""
-        clip = self._build_speaker_clip(
-            audio,
-            spans,
-            sample_rate=sample_rate,
-            min_speech_s=min_speech_s,
-            max_clip_s=max_clip_s,
-        )
-        if clip is None:
-            return None
-        result = self._embed_speaker(0, "link", clip, sample_rate=sample_rate)
-        if result is None:
-            return None
-        return result[1]
 
     def embed_speaker_spans_from_path(
         self,

@@ -4,14 +4,13 @@ from audio_intel.audio.chunking import Chunk, build_chunks
 from audio_intel.audio.decode import (
     SAMPLE_RATE,
     extract_wav_window,
-    load_audio,
     load_audio_at,
     load_audio_spans,
     load_audio_window,
     probe_media_duration,
 )
 from audio_intel.audio.vad_bridge import regions_to_vad_samples, total_samples_from_duration
-from audio_intel.audio.workspace import MediaWorkspace, convert_to_wav
+from audio_intel.audio.workspace import MediaWorkspace, convert_to_wav, convert_to_wavs
 
 __all__ = [
     "Chunk",
@@ -19,8 +18,8 @@ __all__ = [
     "SAMPLE_RATE",
     "build_chunks",
     "convert_to_wav",
+    "convert_to_wavs",
     "extract_wav_window",
-    "load_audio",
     "load_audio_at",
     "load_audio_spans",
     "load_audio_window",
