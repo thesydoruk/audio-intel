@@ -4,7 +4,6 @@ from audio_intel.audio.chunking import Chunk, build_chunks
 from audio_intel.audio.decode import (
     SAMPLE_RATE,
     extract_wav_window,
-    load_audio_at,
     load_audio_spans,
     load_audio_window,
     probe_media_duration,
@@ -20,7 +19,6 @@ __all__ = [
     "convert_to_wav",
     "convert_to_wavs",
     "extract_wav_window",
-    "load_audio_at",
     "load_audio_spans",
     "load_audio_window",
     "probe_media_duration",
