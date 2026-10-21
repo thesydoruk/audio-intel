@@ -1,0 +1,11 @@
+# Pins that every pip install in the Dockerfile must respect (pip -c).
+#
+# torch/torchaudio come from the cu128 PyTorch index: the first CUDA build with
+# Blackwell (sm_120) kernels. Without a constraint, a later `pip install` of a
+# dependency that lists torch can quietly swap in the CPU/cu126 wheel from PyPI.
+torch==2.8.0
+torchaudio==2.8.0
+# pyannote.audio 4 decodes through torchcodec; 0.7.x pairs with torch 2.8.
+torchcodec>=0.7,<0.8
+# 4.6.3 is the first release built for CUDA 12.8; cuDNN 9 as before.
+ctranslate2>=4.6.3,<5

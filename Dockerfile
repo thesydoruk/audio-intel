@@ -1,7 +1,9 @@
 # audio-intel: per-VAD-chunk transcription (faster-whisper) + non-speech sound
 # detection (PANNs/AudioSet) on a single timeline.
-# CUDA 12.6 + cuDNN 9 runtime satisfies CTranslate2 (faster-whisper) GPU requirements.
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+# CUDA 12.8 + cuDNN 9 runtime: the first CUDA with Blackwell (sm_120, RTX 50xx)
+# kernels, and what the torch cu128 wheels and CTranslate2 >= 4.6.3 are built for.
+# Older cards (Ampere, Ada) run on the same image.
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -20,30 +22,34 @@ WORKDIR /app
 # Dependencies first, from pyproject.toml alone, so editing src/ does not
 # invalidate the multi-GB torch layer on every rebuild.
 #
-# pyannote.audio 4 needs torch >= 2.8 and torchcodec (0.7.x pairs with torch 2.8).
+# constraints.txt pins torch/torchaudio to the cu128 wheels, torchcodec to the
+# series that pairs with them, and ctranslate2 to a CUDA 12.8 build; every pip
+# call below passes it, so no dependency can drag another torch in from PyPI.
 # whisperx pins pyannote.audio < 4 although its CTC alignment never imports
 # pyannote, so it is installed without dependencies and its alignment deps are
-# listed explicitly. The final reinstall keeps pip from drifting torch or
-# ctranslate2 (cuDNN 9) away from this CUDA 12.6 runtime.
-ARG TORCH_VERSION=2.8.0
-ARG TORCH_INDEX=https://download.pytorch.org/whl/cu126
-COPY pyproject.toml ./
+# listed explicitly.
+#
+# SLIM=1 removes triton, which only torch.compile loads (~0.5 GB on disk). NCCL
+# looks removable too but libtorch_cuda.so links it directly: torch does not
+# import without it.
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
+ARG SLIM=1
+COPY pyproject.toml constraints.txt ./
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir \
-        torch==${TORCH_VERSION} torchaudio==${TORCH_VERSION} \
-        --index-url ${TORCH_INDEX} \
+    && /opt/venv/bin/pip install --no-cache-dir -c constraints.txt \
+        torch torchaudio --index-url ${TORCH_INDEX} \
     && python3 -c 'import tomllib; p = tomllib.load(open("pyproject.toml", "rb"))["project"]; \
         print("\n".join(p["dependencies"] + p["optional-dependencies"]["server"] + p["optional-dependencies"]["vad"]))' \
         > /tmp/requirements.txt \
-    && /opt/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt "torchcodec>=0.7,<0.8" \
+    && /opt/venv/bin/pip install --no-cache-dir -c constraints.txt \
+        -r /tmp/requirements.txt torchcodec \
     && /opt/venv/bin/pip install --no-cache-dir --no-deps "whisperx==3.7.9" \
-    && /opt/venv/bin/pip install --no-cache-dir \
-        "nltk>=3.9.1" "pandas>=2.2.3" "transformers>=4.48.0,<5" \
-        "ctranslate2>=4.5.0,<5" \
-    && /opt/venv/bin/pip install --no-cache-dir \
-        torch==${TORCH_VERSION} torchaudio==${TORCH_VERSION} \
-        --index-url ${TORCH_INDEX} \
+    && /opt/venv/bin/pip install --no-cache-dir -c constraints.txt \
+        "nltk>=3.9.1" "pandas>=2.2.3" "transformers>=4.48.0,<5" ctranslate2 \
+    && if [ "${SLIM}" = "1" ]; then \
+        /opt/venv/bin/pip uninstall -y triton; \
+       fi \
     && rm /tmp/requirements.txt
 
 COPY README.md LICENSE ./

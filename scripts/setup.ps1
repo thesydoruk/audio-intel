@@ -1,7 +1,7 @@
 # Local install into .venv: the service, dev tools, and WhisperX alignment.
 #
 # For a CUDA build of torch, set TORCH_INDEX to the matching PyTorch wheel index
-# before running, e.g. $env:TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
+# before running, e.g. $env:TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot

@@ -16,17 +16,6 @@ SAMPLE_RATE = 16000
 _WAV_COPY_BLOCK_S = 10.0
 
 
-def load_audio_at(path: str, sample_rate: int) -> np.ndarray:
-    """Decode media into a mono float32 array at an arbitrary sample rate.
-
-    Used by audio-event detection, which runs PANNs at 32 kHz rather than the
-    16 kHz Whisper/VAD rate.
-    """
-    from faster_whisper.audio import decode_audio
-
-    return decode_audio(path, sampling_rate=sample_rate)
-
-
 def probe_media_duration(path: str) -> float:
     """Return media duration in seconds via ffprobe."""
     result = subprocess.run(

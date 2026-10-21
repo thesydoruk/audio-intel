@@ -48,6 +48,7 @@ jobs:
           filters: |
             image:
               - Dockerfile
+              - constraints.txt
               - pyproject.toml
               - scripts/image-smoke.sh
               - .github/workflows/ci.yml
@@ -62,11 +63,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Free disk space
-        # The image is ~13 GB unpacked; the stock runner has ~14 GB free.
+        # The image is ~20 GB unpacked (CUDA 12.8 torch); the stock runner has
+        # ~14 GB free, so the preinstalled images go too.
         uses: jlumbroso/free-disk-space@v1.3.1
         with:
           tool-cache: true
-          docker-images: false
+          docker-images: true
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: Build
