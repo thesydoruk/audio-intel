@@ -19,6 +19,10 @@ speaker diarization, speaker voice vectors, sound events and word-level alignmen
 
 Input: anything ffmpeg can decode (wav, mp3, m4a, ogg, mp4, mov, …). One file per request.
 
+The same package also does **speaker separation**: `audio-intel separate` turns one recording
+into a clean 48 kHz track per speaker plus a background track (music, effects), sample-aligned
+with the master, for dubbing and per-speaker ASR. See [docs/separate/USAGE.md](docs/separate/USAGE.md).
+
 ## Contents
 
 - [Choose how to install](#choose-how-to-install)

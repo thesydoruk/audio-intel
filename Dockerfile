@@ -40,7 +40,9 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir -c constraints.txt \
         torch torchaudio --index-url ${TORCH_INDEX} \
     && python3 -c 'import tomllib; p = tomllib.load(open("pyproject.toml", "rb"))["project"]; \
-        print("\n".join(p["dependencies"] + p["optional-dependencies"]["server"] + p["optional-dependencies"]["vad"]))' \
+        print("\n".join(p["dependencies"] + p["optional-dependencies"]["server"] + p["optional-dependencies"]["vad"] \
+            + p["optional-dependencies"]["separate-core"] \
+            + [d for d in p["optional-dependencies"]["separate"] if not d.startswith("audio-intel")]))' \
         > /tmp/requirements.txt \
     && /opt/venv/bin/pip install --no-cache-dir -c constraints.txt \
         -r /tmp/requirements.txt torchcodec \

@@ -59,9 +59,15 @@ server = [
 # Dockerfile installs it with --no-deps (its alignment code never imports pyannote).
 align = ["whisperx>=3.3.0"]
 vad = ["silero-vad>=5.1"]
-all = ["audio-intel[server,vad]"]
+# Speaker separation (audio-intel separate): the pure-Python part runs the stub
+# backends and the tests; `separate` adds the models (Demucs, SpeechBrain
+# SepFormer / ECAPA). ClearerVoice enhancement is a further opt-in.
+separate-core = ["scipy>=1.11", "soxr>=0.3.7", "pyyaml>=6.0", "tqdm>=4.66", "rich>=13.7"]
+separate = ["audio-intel[separate-core]", "demucs>=4.0.1", "speechbrain>=1.0", "safetensors>=0.4"]
+clearvoice = ["clearvoice"]
+all = ["audio-intel[server,vad,separate]"]
 # ruff matches .pre-commit-config.yaml so CI and the hook format identically.
-dev = ["pytest>=8.0", "ruff==0.11.13", "pre-commit>=4.0"]
+dev = ["audio-intel[separate-core]", "pytest>=8.0", "ruff==0.11.13", "pre-commit>=4.0"]
 
 [project.urls]
 Homepage = "https://github.com/thesydoruk/audio-intel"
@@ -86,10 +92,31 @@ packages = [
     "audio_intel.server",
     "audio_intel.transcribe",
     "audio_intel.vad",
+    "audio_intel.separate",
+    "audio_intel.separate.audio",
+    "audio_intel.separate.cache",
+    "audio_intel.separate.embeddings",
+    "audio_intel.separate.evaluation",
+    "audio_intel.separate.models",
+    "audio_intel.separate.models.diarization",
+    "audio_intel.separate.models.embeddings",
+    "audio_intel.separate.models.enhancement",
+    "audio_intel.separate.models.overlap",
+    "audio_intel.separate.models.separation",
+    "audio_intel.separate.models.super_resolution",
+    "audio_intel.separate.models.tse",
+    "audio_intel.separate.pipeline",
+    "audio_intel.separate.report",
+    "audio_intel.separate.stitching",
+    "audio_intel.separate.tracking",
 ]
+
+[tool.setuptools.package-data]
+"audio_intel.separate" = ["default.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
