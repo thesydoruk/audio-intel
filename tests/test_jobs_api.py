@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 try:
     from fastapi.testclient import TestClient
-except ImportError:  # pragma: no cover - dev extra not installed
+except Exception:  # pragma: no cover - starlette raises RuntimeError without httpx
     TestClient = None  # type: ignore[assignment]
 
 from audio_intel.jobs.lane import BatchBusyError  # noqa: E402
