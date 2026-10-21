@@ -10,7 +10,9 @@ Pipeline:
 
 Models other than Whisper and VAD live in model groups (see
 :mod:`audio_intel.common.residency`): loaded on first use, optionally unloaded
-after idling."""
+after idling. GPU-bound calls take a token from :class:`GpuTokens` so stages of
+concurrent requests do not pile onto the card at once.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from dataclasses import dataclass, field
 
 from audio_intel.audio.chunking import Chunk
 from audio_intel.audio.workspace import MediaWorkspace
+from audio_intel.common.gpu_tokens import GpuTokens
 from audio_intel.common.residency import ResidencyManager
 from audio_intel.config import Config
 from audio_intel.diarization.chunks import merge_speaker_ids_by_embedding, remap_segment_speaker_ids
@@ -88,6 +91,8 @@ class Transcriber:
         self._queue_lock = threading.Lock()
         self._queued = 0
         self._in_flight = 0
+        self._tokens = GpuTokens(cfg.gpu_parallel)
+        self._priority_local = threading.local()
         self._residency = ResidencyManager(
             unload_idle=cfg.unload_idle_models, idle_ttl_s=cfg.model_idle_ttl_s
         )
@@ -207,8 +212,17 @@ class Transcriber:
                 "max": self.cfg.max_concurrent_requests,
                 "queue_max": self.cfg.max_queued_requests,
             },
+            "gpu_tokens": self._tokens.snapshot(),
             "models": self._residency.snapshot(),
         }
+
+    def _priority(self) -> int:
+        """GPU-token priority of the request this thread serves (0 = interactive).
+
+        Set per request in :meth:`transcribe`; worker threads a stage spawns
+        inherit the default, which is the interactive priority.
+        """
+        return int(getattr(self._priority_local, "priority", 0))
 
     # ---- model group loaders ------------------------------------------------------
 
@@ -255,8 +269,13 @@ class Transcriber:
         sound_events: bool = False,
         aed_overrides: dict | None = None,
         aed_debug_top_n: int = 0,
+        priority: int = 0,
     ) -> dict:
-        """Transcribe a media file into a verbose-JSON-shaped dict."""
+        """Transcribe a media file into a verbose-JSON-shaped dict.
+
+        ``priority`` orders this request's GPU stages against others (lower first).
+        """
+        self._priority_local.priority = priority
         with self._request_slot():
             return self._run(
                 path,
@@ -509,12 +528,13 @@ class Transcriber:
             return None
 
         try:
-            transcription = self._engine.transcribe_array(
-                clip,
-                language=language,
-                time_offset=chunk.start,
-                word_timestamps=word_timestamps,
-            )
+            with self._tokens.hold(self._priority()):
+                transcription = self._engine.transcribe_array(
+                    clip,
+                    language=language,
+                    time_offset=chunk.start,
+                    word_timestamps=word_timestamps,
+                )
         finally:
             del clip
 
@@ -755,11 +775,12 @@ class Transcriber:
             language_override=None,
             language=language,
         )
-        aligned = aligner.align_transcript(  # type: ignore[union-attr]
-            transcript,
-            audio_path=audio_path,
-            audio=audio,
-        )
+        with self._tokens.hold(self._priority()):
+            aligned = aligner.align_transcript(  # type: ignore[union-attr]
+                transcript,
+                audio_path=audio_path,
+                audio=audio,
+            )
         merged, failed_count = merge_aligned_speech_segments(local, aligned)
         if time_offset:
             merged = shift_speech_segments(merged, time_offset)
@@ -789,13 +810,14 @@ class Transcriber:
                     for sid, spans in spans_by_speaker.items()
                     for start, end in spans
                 ]
-                embeddings = self.embedder.embed_speakers(
-                    media.whisper_path,
-                    intervals,
-                    sample_rate=SAMPLE_RATE,
-                    min_speech_s=min_speech_s,
-                    max_clip_s=max_clip_s,
-                )
+                with self._tokens.hold(self._priority()):
+                    embeddings = self.embedder.embed_speakers(
+                        media.whisper_path,
+                        intervals,
+                        sample_rate=SAMPLE_RATE,
+                        min_speech_s=min_speech_s,
+                        max_clip_s=max_clip_s,
+                    )
                 return {
                     "duration": round(media.duration_s, 3),
                     "embedding_model": self.embedder.model_id,
@@ -843,20 +865,22 @@ class Transcriber:
         updated_segments = speech_segments
         log.info("Speaker pipeline starting (%d speech segments)", len(speech_segments))
         try:
-            intervals = self.diarizer.diarize(  # type: ignore[union-attr]
-                media.whisper_path,
-                duration_s=media.duration_s,
-                link_embedder=self.embedder,
-            )
+            with self._tokens.hold(self._priority()):
+                intervals = self.diarizer.diarize(  # type: ignore[union-attr]
+                    media.whisper_path,
+                    duration_s=media.duration_s,
+                    link_embedder=self.embedder,
+                )
             updated_segments, speakers = assign_speakers_to_segments(speech_segments, intervals)
             if self.embedder is not None and intervals:
                 from audio_intel.audio.decode import SAMPLE_RATE
 
-                embeddings = self.embedder.embed_speakers(
-                    media.whisper_path,
-                    intervals,
-                    sample_rate=SAMPLE_RATE,
-                )
+                with self._tokens.hold(self._priority()):
+                    embeddings = self.embedder.embed_speakers(
+                        media.whisper_path,
+                        intervals,
+                        sample_rate=SAMPLE_RATE,
+                    )
                 merge_map = merge_speaker_ids_by_embedding(
                     embeddings,
                     threshold=self.cfg.diarization_link_threshold,
@@ -927,12 +951,13 @@ class Transcriber:
                 "Sound detection starting: %.1fs at %d Hz", duration_s, self.cfg.aed_sample_rate
             )
             params = AedParams.from_config(self.cfg).with_overrides(aed_overrides)
-            events, debug = self.aed.detect_file(  # type: ignore[union-attr]
-                media.aed_path,
-                params=params,
-                debug_top_n=aed_debug_top_n,
-                duration_s=duration_s,
-            )
+            with self._tokens.hold(self._priority()):
+                events, debug = self.aed.detect_file(  # type: ignore[union-attr]
+                    media.aed_path,
+                    params=params,
+                    debug_top_n=aed_debug_top_n,
+                    duration_s=duration_s,
+                )
             log.info(
                 "Sound detection finished in %.1fs: %d events",
                 time.perf_counter() - started,

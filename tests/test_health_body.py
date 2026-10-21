@@ -16,6 +16,7 @@ class FakeService:
     def snapshot(self) -> dict:
         return {
             "requests": {"in_flight": 1, "queued": 0, "max": 2, "queue_max": 8},
+            "gpu_tokens": {"max": 2, "in_use": 1, "waiting": 0},
             "models": {"unload_idle": False, "idle_ttl_s": 600.0, "groups": {}},
         }
 
@@ -30,6 +31,7 @@ class HealthBodyTests(unittest.TestCase):
         self.assertIn("alignment_enabled", body)
         self.assertIsNone(body["gpu"])
         self.assertEqual(body["requests"]["in_flight"], 1)
+        self.assertEqual(body["gpu_tokens"]["max"], 2)
         self.assertIn("groups", body["models"])
 
     def test_answers_before_the_service_exists(self) -> None:

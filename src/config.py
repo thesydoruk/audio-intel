@@ -88,6 +88,8 @@ class Config:
     hallucination_overrun_s: float
     # pyannote turns TF32 off for the whole process when it loads; this turns it back on.
     allow_tf32: bool
+    # GPU stages take one of these tokens (0 = unlimited); CPU stages run free.
+    gpu_parallel: int
     # Unload model groups other than Whisper after this long idle (UNLOAD_IDLE_MODELS=1).
     unload_idle_models: bool
     model_idle_ttl_s: float
@@ -189,6 +191,7 @@ def load_config() -> Config:
         hallucination_max_no_speech_span_s=_float("ASR_MAX_NO_SPEECH_SPAN_S", 1.0),
         hallucination_overrun_s=_float("ASR_SEGMENT_OVERRUN_S", 0.5),
         allow_tf32=_bool("TORCH_ALLOW_TF32", False),
+        gpu_parallel=max(0, min(_int("GPU_PARALLEL", 2), 16)),
         unload_idle_models=_bool("UNLOAD_IDLE_MODELS", False),
         model_idle_ttl_s=max(1.0, _float("MODEL_IDLE_TTL_S", 600.0)),
         vad_threshold=_float("VAD_SPEECH_THRESHOLD", 0.5),
