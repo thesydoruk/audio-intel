@@ -746,6 +746,7 @@ class Transcriber:
             if self.embedder is not None:
                 self.embedder.ensure_ready()
             self._speakers_ready = True
+            _restore_tf32(self.cfg)
 
     def _apply_diarization(
         self,
@@ -902,3 +903,22 @@ def _chunk_speech_spans(chunk: Chunk) -> tuple[tuple[float, float], ...]:
     if isinstance(spans, tuple) and spans:
         return spans
     return ((chunk.start, chunk.end),)
+
+
+def _restore_tf32(cfg: Config) -> None:
+    """pyannote disables TF32 process-wide on load; re-enable it when configured.
+
+    TF32 trades a little matmul precision for speed on Ampere and newer cards.
+    pyannote turns it off for reproducible diarization, which also slows PANNs
+    and wav2vec2 in the same process. Off by default: pyannote's choice stands
+    unless ``TORCH_ALLOW_TF32=1``.
+    """
+    if not cfg.allow_tf32:
+        return
+    try:
+        import torch
+    except ImportError:
+        return
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    log.info("TF32 re-enabled after pyannote load (TORCH_ALLOW_TF32=1)")

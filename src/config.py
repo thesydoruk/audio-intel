@@ -86,6 +86,8 @@ class Config:
     hallucination_max_no_speech_prob: float
     hallucination_max_no_speech_span_s: float
     hallucination_overrun_s: float
+    # pyannote turns TF32 off for the whole process when it loads; this turns it back on.
+    allow_tf32: bool
     vad_threshold: float
     vad_min_speech_ms: int
     vad_min_silence_ms: int
@@ -183,6 +185,7 @@ def load_config() -> Config:
         hallucination_max_no_speech_prob=_float("ASR_MAX_NO_SPEECH_PROB", 0.8),
         hallucination_max_no_speech_span_s=_float("ASR_MAX_NO_SPEECH_SPAN_S", 1.0),
         hallucination_overrun_s=_float("ASR_SEGMENT_OVERRUN_S", 0.5),
+        allow_tf32=_bool("TORCH_ALLOW_TF32", False),
         vad_threshold=_float("VAD_SPEECH_THRESHOLD", 0.5),
         vad_min_speech_ms=_int("VAD_MIN_SPEECH_MS", 250),
         vad_min_silence_ms=_int("VAD_MIN_SILENCE_MS", 400),
