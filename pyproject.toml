@@ -88,6 +88,7 @@ packages = [
     "audio_intel.common",
     "audio_intel.diarization",
     "audio_intel.events",
+    "audio_intel.jobs",
     "audio_intel.quality",
     "audio_intel.server",
     "audio_intel.transcribe",
