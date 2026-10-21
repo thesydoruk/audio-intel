@@ -1,11 +1,25 @@
-"""CLI entry point for the HTTP transcription server."""
+"""CLI entry point: the HTTP transcription server, or ``separate`` for the CLI.
+
+``audio-intel`` with no arguments (or ``serve``) starts the server;
+``audio-intel separate <input> [-o out] ...`` runs speaker separation on one
+file without the server (see ``audio-intel separate --help``).
+"""
 
 from __future__ import annotations
 
 import logging
+import sys
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "separate":
+        from audio_intel.separate.cli import main as separate_main
+
+        raise SystemExit(separate_main(args[1:]))
+    if args and args[0] != "serve":
+        raise SystemExit(f"unknown command {args[0]!r}; use `serve` or `separate`")
+
     import uvicorn
     from audio_intel.config import load_config
     from audio_intel.server.app import app

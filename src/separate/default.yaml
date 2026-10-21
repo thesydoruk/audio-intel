@@ -1,0 +1,157 @@
+# Default configuration for speaker-extract
+# Goal: one clean 48 kHz track per speaker + one "everything else" (music/effects) track,
+# all sample-aligned, ready for ASR and dubbing. Tuned for a single NVIDIA RTX 5090.
+
+audio:
+  target_sample_rate: 48000
+  processing_sample_rate: 16000
+  # Channel layout of the 48 kHz master (and therefore of the background track):
+  #   keep   - preserve source layout, downmixed to at most 2 channels
+  #   mono   - force mono
+  #   stereo - force stereo
+  # Speech stages (diarization, embeddings, TSE) always work on a mono downmix.
+  master_channels: keep
+  master_subtype: PCM_24
+
+separation:
+  # Speech vs. background separation applied to the whole mix before diarization.
+  #   demucs   - Demucs (htdemucs_ft): vocals -> speech stem, drums+bass+other -> background
+  #   residual - no model; background = master minus the assembled speaker tracks
+  #   none     - no background track at all
+  backend: demucs
+  model: htdemucs_ft          # htdemucs_ft (best) | htdemucs | mdx_extra
+  shifts: 1                   # test-time augmentation; 2 is a little better and 2x slower
+  overlap: 0.25
+  segment: null               # seconds per inference window; null = model default
+  write_speech_stem: true     # keep _speech_48k.wav (vocals stem) next to the outputs
+
+diarization:
+  backend: pyannote_community1   # pyannote_community1 | pyannote | stub
+  model_id: pyannote/speaker-diarization-community-1
+  # full    - diarize the whole recording in one pass (pyannote clusters globally; best)
+  # chunked - diarize overlapping chunks and re-link identities with embeddings
+  mode: full
+  min_speakers: null
+  max_speakers: null
+  num_speakers: null
+  use_exclusive: false        # community-1 exclusive diarization (no overlapping labels)
+  min_segment_duration: 0.2   # drop turns shorter than this (seconds)
+  merge_gap: 0.25             # merge same-speaker turns separated by less than this
+
+chunking:
+  # Used by diarization.mode=chunked (and always for the chunked identity tracker)
+  duration: 45.0
+  overlap: 10.0
+  min_chunk_duration: 5.0
+
+embeddings:
+  backend: speechbrain_ecapa   # speechbrain_ecapa | stub
+  model_id: speechbrain/spkrec-ecapa-voxceleb
+  min_segment_duration: 0.8
+  max_segment_duration: 12.0
+  min_snr_db: 0.0
+  reject_overlap: true
+  update_similarity_threshold: 0.55
+  update_min_duration: 1.0
+  max_samples_per_speaker: 64
+  centroid_method: trimmed_mean  # mean | trimmed_mean | median
+  # Full-file mode: how many clean segments per speaker to embed for the profile
+  max_profile_segments: 12
+
+tracking:
+  # Chunked mode only: combined assignment score weights (must sum ~1)
+  weight_embedding: 0.55
+  weight_overlap_consistency: 0.15
+  weight_temporal_continuity: 0.20
+  weight_profile_confidence: 0.05
+  weight_segment_quality: 0.05
+  new_speaker_threshold: 0.42
+  min_embedding_similarity: 0.28
+
+overlap:
+  # coactivity   - overlaps = time where the diarizer labels >= 2 speakers (community-1 is overlap-aware)
+  # pyannote_osd - dedicated overlapped-speech-detection model only
+  # hybrid       - both
+  backend: coactivity
+  model_id: pyannote/overlapped-speech-detection
+  min_overlap_duration: 0.15
+  merge_gap: 0.08
+
+tse:
+  # Target speaker extraction inside overlap regions
+  #   sepformer       - SpeechBrain SepFormer blind separation + pick source by speaker embedding
+  #   adaptive_wiener - lightweight spectral prior mask (no downloads; weak)
+  #   wesep           - WeSep adapter (needs a local checkpoint), falls back to adaptive_wiener
+  backend: sepformer
+  sample_rate: 16000
+  sepformer_model: speechbrain/sepformer-whamr16k
+  sepformer_sample_rate: 16000
+  window_seconds: 8.0
+  window_overlap_seconds: 1.0
+  enrollment_max_duration: 8.0
+  enrollment_min_duration: 1.0
+  # adaptive_wiener parameters
+  n_fft: 512
+  hop_length: 128
+  wiener_floor: 0.05
+  wiener_power: 1.0
+
+enhancement:
+  # Optional ClearerVoice speech enhancement. Off by default: Demucs already removes
+  # music/effects, and enhancement can colour the voice, which dubbing/voice-cloning dislikes.
+  enabled: false
+  single_speaker_backend: clearvoice_mossformer2_se_48k
+  single_speaker_model: MossFormer2_SE_48K
+  post_tse_backend: clearvoice_frcrn_se_16k
+  post_tse_model: FRCRN_SE_16K
+  single_speaker_mix: 0.85
+  post_tse_mix: 0.70
+
+super_resolution:
+  # Only the TSE path (16 kHz) needs 16 -> 48 kHz. soxr = plain resample (no fake highs);
+  # clearvoice_mossformer2_sr_48k = neural bandwidth extension if ClearerVoice is installed.
+  backend: soxr_hq
+  model: MossFormer2_SR_48K
+  fallback: soxr_hq
+  enabled: true
+
+stitching:
+  crossfade_ms: 40.0
+  # Extend every diarized segment by this much on both sides before writing it, so
+  # word onsets are not clipped and consecutive segments overlap their crossfades.
+  segment_pad_ms: 120.0
+
+device:
+  device: auto        # cuda | cpu | auto
+  dtype: float32      # float16 | bfloat16 | float32 (reserved; models run in their native dtype)
+  # A 5090 (32 GB) holds every model at once; unloading between stages only costs reload time.
+  unload_idle_models: false
+  num_workers: 2
+  max_gpu_memory_fraction: 0.90
+
+cache:
+  enabled: true
+  dir: ./cache
+  include_model_versions: true
+
+output:
+  naming: speaker_{id:02d}_48k.wav
+  background_name: background_48k.wav
+  speech_stem_name: _speech_48k.wav
+  write_background: true
+  write_metadata: true
+  write_html_report: true
+  write_rttm: true
+  subtype: PCM_24
+
+pipeline:
+  run_separation: true
+  run_diarization: true
+  run_embeddings: true
+  run_overlap: true
+  run_tse: true
+  run_enhancement: true
+  run_super_resolution: true
+  resume: true
+  force: false
+  debug: false
