@@ -54,6 +54,7 @@ def build_diarizer(cfg: dict, device: str | None = None) -> Diarizer:
             use_exclusive=bool(diar.get("use_exclusive", False)),
             device=device,
             dtype=dtype,
+            pipeline_provider=cfg.get("_providers", {}).get("diarization"),
         )
     if backend == "stub":
         from audio_intel.separate.models.diarization.stub import StubDiarizer
@@ -75,6 +76,21 @@ def build_embedder(cfg: dict, device: str | None = None) -> SpeakerEmbedder:
             savedir=f"{cache_dir}/models/speechbrain_ecapa",
             device=device,
             dtype=dtype,
+        )
+    if backend in {"wespeaker", "pyannote"}:
+        from audio_intel.separate.models.embeddings.wespeaker import (
+            DEFAULT_MODEL_ID,
+            WeSpeakerEmbedder,
+        )
+
+        model_id = emb.get("model_id", "")
+        if not model_id or "speechbrain" in model_id:
+            model_id = DEFAULT_MODEL_ID
+        return WeSpeakerEmbedder(
+            model_id=model_id,
+            device=device,
+            dtype=dtype,
+            inference_provider=cfg.get("_providers", {}).get("embedding"),
         )
     if backend == "stub":
         from audio_intel.separate.models.embeddings.stub import StubEmbedder

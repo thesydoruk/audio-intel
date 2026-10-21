@@ -45,7 +45,10 @@ chunking:
   min_chunk_duration: 5.0
 
 embeddings:
-  backend: speechbrain_ecapa   # speechbrain_ecapa | stub
+  # speechbrain_ecapa (192-d, the thresholds below were tuned for it) |
+  # wespeaker (pyannote community-1, 256-d: the space the transcription service's
+  # speaker roster uses, so profiles compare with its stored voices) | stub
+  backend: speechbrain_ecapa
   model_id: speechbrain/spkrec-ecapa-voxceleb
   min_segment_duration: 0.8
   max_segment_duration: 12.0

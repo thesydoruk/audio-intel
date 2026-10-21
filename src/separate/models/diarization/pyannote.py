@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from audio_intel.separate.models.base import Diarizer
@@ -35,13 +37,21 @@ class PyannoteDiarizer(Diarizer):
         use_exclusive: bool = False,
         device: str = "cuda",
         dtype: str = "float32",
+        pipeline_provider: Callable[[], Any] | None = None,
     ) -> None:
         super().__init__(device=device, dtype=dtype)
         self.model_id = model_id
         self.use_exclusive = use_exclusive
         self._pipeline = None
+        # The transcription service hands in its own loaded pipeline this way,
+        # so one copy serves both diarization and separation.
+        self._provider = pipeline_provider
 
     def load(self) -> None:
+        if self._provider is not None:
+            self._pipeline = self._provider()
+            self._loaded = True
+            return
         import torch
         from pyannote.audio import Pipeline
 
@@ -70,6 +80,8 @@ class PyannoteDiarizer(Diarizer):
     def unload(self) -> None:
         self._pipeline = None
         self._loaded = False
+        if self._provider is not None:
+            return
         try:
             import torch
 
