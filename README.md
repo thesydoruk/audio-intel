@@ -260,6 +260,7 @@ over `.env`. Every variable is documented with its values and effect in
 | ------------------------- | ---------- | ----------------------------------------------------------------------- |
 | `ASR_MODEL`               | `large-v3` | Whisper size: `large-v3-turbo` is much faster at slightly lower quality |
 | `ASR_LANGUAGE`            | `auto`     | Force one language (`uk`, `en`, …) instead of detecting per chunk       |
+| `ASR_HALLUCINATION_FILTER` | `1`      | Drop decoded text that no VAD speech backs (music, padding); see `.env.example` |
 | `ASR_DEVICE`              | `cuda`     | `cpu` to run without a GPU (pair with `ASR_COMPUTE_TYPE=int8`)          |
 | `MAX_CONCURRENT_REQUESTS` | `2`        | Requests processed at once; the rest wait in line                       |
 | `MAX_QUEUED_REQUESTS`     | `8`        | Requests allowed to wait; beyond that the server answers `503`          |
@@ -366,6 +367,8 @@ One timeline in `segments`, speech and sounds sorted by time and told apart by `
 - `languages`: every detected language in order of appearance; `language` is the first,
   for OpenAI compatibility.
 - `confidence`: duration-weighted mean over speech.
+- `dropped_segments` (when > 0): decoded segments the hallucination filter removed
+  (text over music or padding with no speech under it; `ASR_HALLUCINATION_FILTER`).
 - `speakers` (with `diarize=true`): one row per speaker. Speakers with enough speech get an
   L2-normalized `embedding` and the `embedding_model` that produced it.
 - With `align=true`: `alignment_requested`, `alignment_applied`, `alignment_failed`,
@@ -513,6 +516,11 @@ the image recipe changes.
 on the host that will serve: it asserts torch ships kernels for the card (a Blackwell card
 needs the CUDA 12.8 image), that CTranslate2 sees the GPU, then starts the service and
 transcribes the sample. `HF_TOKEN` in the environment enables `diarize=1`.
+
+`scripts/eval_hallucination.py <manifest.jsonl>` measures the hallucination filter on a
+labelled corpus (speech clips with reference text, non-speech audio such as Demucs
+background stems) and prints a threshold grid; its docstring has the manifest format and
+the `docker run` line. Change the filter's defaults only with its numbers.
 
 ## Releases
 

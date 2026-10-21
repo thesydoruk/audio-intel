@@ -47,6 +47,7 @@ class RequestFeatureFlagsTest(unittest.TestCase):
                     [{"kind": "speech", "start": 0.0, "end": 1.0, "text": "hi", "confidence": 0.9}],
                     ["hi"],
                     ["en"],
+                    [],
                 )
 
                 transcriber.transcribe(
@@ -113,6 +114,7 @@ class RequestFeatureFlagsTest(unittest.TestCase):
                     [{"kind": "speech", "start": 0.0, "end": 1.0, "text": "hi", "confidence": 0.9}],
                     ["hi"],
                     ["en"],
+                    [],
                 )
 
                 result = transcriber.transcribe(
@@ -194,7 +196,7 @@ class RequestFeatureFlagsTest(unittest.TestCase):
                 speech = [
                     {"kind": "speech", "start": 0.0, "end": 1.0, "text": "hi", "confidence": 0.9}
                 ]
-                transcribe_chunks.return_value = (speech, ["hi"], ["en"])
+                transcribe_chunks.return_value = (speech, ["hi"], ["en"], [])
                 apply_alignment.return_value = (speech, {"alignment_applied": True})
 
                 transcriber.transcribe("clip.wav", align=True)
@@ -228,6 +230,7 @@ class RequestFeatureFlagsTest(unittest.TestCase):
                     [{"kind": "speech", "start": 0.0, "end": 1.0, "text": "hi", "confidence": 0.9}],
                     ["hi"],
                     ["en"],
+                    [],
                 )
 
                 transcriber.transcribe("clip.wav", align=False)

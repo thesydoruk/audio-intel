@@ -14,10 +14,16 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Chunk:
-    """A contiguous audio span to transcribe, in seconds from file start."""
+    """A contiguous audio span to transcribe, in seconds from file start.
+
+    ``speech`` lists the VAD regions the chunk was built from, so a later stage
+    can tell which parts of the chunk are speech and which are the silence or
+    music between them (see :mod:`audio_intel.transcribe.hallucination`).
+    """
 
     start: float
     end: float
+    speech: tuple[tuple[float, float], ...] = ()
 
 
 def build_chunks(
@@ -47,27 +53,32 @@ def build_chunks(
     merged: list[Chunk] = []
     cur_start: float | None = None
     cur_end: float | None = None
+    cur_regions: list[tuple[float, float]] = []
 
     for region in speech:
         start_s = region["start"] / sample_rate
         end_s = region["end"] / sample_rate
         if cur_start is None:
             cur_start, cur_end = start_s, end_s
+            cur_regions = [(start_s, end_s)]
         elif end_s - cur_start <= max_chunk_s and (
             max_gap_s <= 0 or start_s - float(cur_end or 0.0) <= max_gap_s
         ):
             cur_end = end_s
+            cur_regions.append((start_s, end_s))
         else:
-            merged.append(Chunk(cur_start, cur_end))  # type: ignore[arg-type]
+            merged.append(Chunk(cur_start, cur_end, tuple(cur_regions)))  # type: ignore[arg-type]
             cur_start, cur_end = start_s, end_s
+            cur_regions = [(start_s, end_s)]
 
     if cur_start is not None and cur_end is not None:
-        merged.append(Chunk(cur_start, cur_end))
+        merged.append(Chunk(cur_start, cur_end, tuple(cur_regions)))
 
     padded: list[Chunk] = []
     for chunk in merged:
         start = max(0.0, chunk.start - pad_s)
         end = min(total_s, chunk.end + pad_s)
         if end > start:
-            padded.append(Chunk(round(start, 3), round(end, 3)))
+            regions = tuple((round(s, 3), round(e, 3)) for s, e in chunk.speech)
+            padded.append(Chunk(round(start, 3), round(end, 3), regions))
     return padded

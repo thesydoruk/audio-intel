@@ -121,6 +121,8 @@ def build_transcription_body(result: dict) -> dict:
     }
     if result.get("speakers"):
         body["speakers"] = result["speakers"]
+    if result.get("dropped_segments"):
+        body["dropped_segments"] = int(result["dropped_segments"])
     if result.get("aed_debug"):
         body["aed_debug"] = result["aed_debug"]
     if result.get("alignment_requested"):

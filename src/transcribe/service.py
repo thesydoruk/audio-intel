@@ -17,7 +17,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from audio_intel.audio.chunking import Chunk
 from audio_intel.audio.workspace import MediaWorkspace
@@ -38,6 +38,7 @@ from audio_intel.transcribe.alignment import (
     speech_segments_to_transcript,
 )
 from audio_intel.transcribe.engine import WhisperEngine, WhisperRuntime
+from audio_intel.transcribe.hallucination import HallucinationConfig, filter_segments
 from audio_intel.transcribe.segments import overall_confidence, speech_segment_to_timeline_dict
 from audio_intel.vad.pipeline import VadPipeline
 
@@ -66,6 +67,7 @@ class _ChunkTranscription:
     segments: list[dict]
     text_parts: list[str]
     languages: list[str]
+    dropped: list[dict] = field(default_factory=list)
 
 
 class ServiceBusyError(RuntimeError):
@@ -96,6 +98,9 @@ class Transcriber:
         )
         self._engine = WhisperEngine(WhisperRuntime.from_server(cfg))
         self._engine.ensure_workers(whisper_pool_size)
+        self._hallucination = HallucinationConfig.from_config(cfg)
+        if not cfg.hallucination_filter:
+            log.info("Hallucination filter disabled (dry run: segments annotated, none dropped)")
         log.info("Whisper model%s loaded", "" if whisper_pool_size == 1 else " copies")
 
         self._vad = VadPipeline.from_server(cfg)
@@ -254,16 +259,18 @@ class Transcriber:
 
             whisper_started = time.perf_counter()
             want_ctc = align and cfg.alignment_enabled
-            speech_segments, text_parts, languages = self._transcribe_chunks(
+            speech_segments, text_parts, languages, dropped = self._transcribe_chunks(
                 media,
                 chunks,
                 language,
                 word_timestamps=not want_ctc,
             )
             log.info(
-                "Whisper finished in %.1fs: %d speech segments, languages=%s",
+                "Whisper finished in %.1fs: %d speech segments (%d dropped as hallucinated), "
+                "languages=%s",
                 time.perf_counter() - whisper_started,
                 len(speech_segments),
+                len(dropped),
                 languages,
             )
 
@@ -333,6 +340,8 @@ class Transcriber:
                 "duration": total_s,
                 "segments": segments,
             }
+            if dropped:
+                result["dropped_segments"] = len(dropped)
             if align:
                 result.update(alignment_meta)
             if speakers:
@@ -348,10 +357,14 @@ class Transcriber:
         language: str | None,
         *,
         word_timestamps: bool = True,
-    ) -> tuple[list[dict], list[str], list[str]]:
-        """Transcribe all VAD chunks, using parallel model copies when configured."""
+    ) -> tuple[list[dict], list[str], list[str], list[dict]]:
+        """Transcribe all VAD chunks, using parallel model copies when configured.
+
+        Returns kept speech segments, their text parts, the languages seen, and
+        the segments the hallucination filter dropped.
+        """
         if not chunks:
-            return [], [], []
+            return [], [], [], []
 
         jobs = list(enumerate(chunks))
         worker_count = self.cfg.whisper_parallel_workers
@@ -396,9 +409,9 @@ class Transcriber:
                     if result is not None:
                         chunk_results.append(result)
 
-        speech_segments, text_parts, languages = _merge_chunk_transcriptions(chunk_results)
+        speech_segments, text_parts, languages, dropped = _merge_chunk_transcriptions(chunk_results)
         speech_segments.sort(key=lambda s: s["start"])
-        return speech_segments, text_parts, languages
+        return speech_segments, text_parts, languages, dropped
 
     def _transcribe_one_chunk(
         self,
@@ -425,9 +438,15 @@ class Transcriber:
             del clip
 
         chunk_segments = [speech_segment_to_timeline_dict(seg) for seg in transcription.segments]
-        text_parts = [seg.text for seg in transcription.segments]
+        chunk_segments, dropped = filter_segments(
+            chunk_segments,
+            speech_spans=_chunk_speech_spans(chunk),
+            audio_end=chunk.end,
+            cfg=self._hallucination,
+        )
+        text_parts = [seg["text"] for seg in chunk_segments]
         chunk_languages: list[str] = []
-        if transcription.language != "unknown":
+        if transcription.language != "unknown" and chunk_segments:
             chunk_languages.append(transcription.language)
 
         return _ChunkTranscription(
@@ -435,6 +454,7 @@ class Transcriber:
             segments=chunk_segments,
             text_parts=text_parts,
             languages=chunk_languages,
+            dropped=dropped,
         )
 
     def _preload_alignment_models(self) -> None:
@@ -859,16 +879,26 @@ def _empty_alignment_meta(*, requested: bool = True) -> dict:
 
 def _merge_chunk_transcriptions(
     chunk_results: list[_ChunkTranscription],
-) -> tuple[list[dict], list[str], list[str]]:
+) -> tuple[list[dict], list[str], list[str], list[dict]]:
     """Stitch parallel chunk outputs in timeline order."""
     chunk_results.sort(key=lambda item: item.chunk_index)
     speech_segments: list[dict] = []
     text_parts: list[str] = []
     languages: list[str] = []
+    dropped: list[dict] = []
     for result in chunk_results:
         speech_segments.extend(result.segments)
         text_parts.extend(result.text_parts)
+        dropped.extend(result.dropped)
         for lang in result.languages:
             if lang not in languages:
                 languages.append(lang)
-    return speech_segments, text_parts, languages
+    return speech_segments, text_parts, languages, dropped
+
+
+def _chunk_speech_spans(chunk: Chunk) -> tuple[tuple[float, float], ...]:
+    """VAD regions of a chunk; a chunk built without them counts as all speech."""
+    spans = getattr(chunk, "speech", ())
+    if isinstance(spans, tuple) and spans:
+        return spans
+    return ((chunk.start, chunk.end),)

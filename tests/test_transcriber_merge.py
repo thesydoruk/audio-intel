@@ -27,11 +27,12 @@ class TranscriberMergeTests(unittest.TestCase):
             languages=["en"],
         )
 
-        segments, text_parts, languages = _merge_chunk_transcriptions([second, first])
+        segments, text_parts, languages, dropped = _merge_chunk_transcriptions([second, first])
 
         self.assertEqual([segment["text"] for segment in segments], ["one", "two"])
         self.assertEqual(text_parts, ["one", "two"])
         self.assertEqual(languages, ["uk", "en"])
+        self.assertEqual(dropped, [])
 
 
 if __name__ == "__main__":
