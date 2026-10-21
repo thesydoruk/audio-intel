@@ -39,6 +39,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from audio_intel.config import load_config
+from audio_intel.jobs.lane import BatchBusyError
+from audio_intel.jobs.service import JobService
 from audio_intel.server.health import build_health_body, gpu_snapshot
 from audio_intel.server.transcription import (
     build_aed_overrides,
@@ -48,7 +50,7 @@ from audio_intel.server.transcription import (
 )
 from audio_intel.transcribe.service import ServiceBusyError, Transcriber
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 cfg = load_config()
 logging.basicConfig(
@@ -69,9 +71,12 @@ _UPLOAD_COPY_BLOCK = 1024 * 1024
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.transcriber = Transcriber(cfg)
+    app.state.jobs = JobService(cfg, app.state.transcriber) if cfg.separate_enabled else None
     try:
         yield
     finally:
+        if app.state.jobs is not None:
+            app.state.jobs.close()
         app.state.transcriber.close()
 
 
@@ -80,6 +85,13 @@ app = FastAPI(title="audio-intel", version=VERSION, lifespan=lifespan)
 
 def _transcriber(request: Request) -> Transcriber:
     return request.app.state.transcriber
+
+
+def _jobs(request: Request) -> JobService:
+    jobs = getattr(request.app.state, "jobs", None)
+    if jobs is None:
+        raise HTTPException(status_code=404, detail="SEPARATE_ENABLED=0: no job lane")
+    return jobs
 
 
 def _spool_upload(file: UploadFile) -> str:
@@ -104,12 +116,16 @@ async def health(request: Request) -> dict:
     body reports resident model groups, request lanes, GPU tokens and VRAM so
     an outside scheduler can see what this instance is doing.
     """
-    return build_health_body(
+    body = build_health_body(
         version=VERSION,
         cfg=cfg,
         service=getattr(request.app.state, "transcriber", None),
         gpu=gpu_snapshot(),
     )
+    jobs = getattr(request.app.state, "jobs", None)
+    if jobs is not None:
+        body.update(jobs.snapshot())
+    return body
 
 
 @app.post("/v1/audio/transcriptions")
@@ -129,11 +145,16 @@ def transcribe(
     align: bool = Form(False),
     diarize: bool = Form(False),
     sound_events: bool = Form(False),
+    separate: bool = Form(False),
 ):
     """Transcribe an uploaded audio/video file.
 
     Sync handler so FastAPI runs it in a worker thread; excess requests wait on
     the transcriber's concurrency semaphore (``MAX_CONCURRENT_REQUESTS``).
+
+    With ``separate=true`` the file becomes a separation job instead: the
+    answer is ``202`` with the job id, and ``GET /v1/jobs/{id}`` has the
+    transcript per speaker track plus the tracks once it is done.
     """
     del model, temperature  # OpenAI-compatible fields; ignored by this service.
 
@@ -150,6 +171,27 @@ def transcribe(
     )
 
     tmp_path = _spool_upload(file)
+    if separate:
+        jobs = _jobs(request)
+        try:
+            job = jobs.submit_separation(
+                tmp_path,
+                file.filename or "upload",
+                {"language": forced, "align": align, "sound_events": sound_events},
+            )
+        except BatchBusyError as exc:
+            os.unlink(tmp_path)
+            raise _busy(ServiceBusyError(str(exc))) from exc
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+        log.info("Separation job %s queued: %s", job.id, file.filename or "upload")
+        return JSONResponse(
+            {"id": job.id, "status": job.status, "url": f"/v1/jobs/{job.id}"},
+            status_code=202,
+            headers={"Location": f"/v1/jobs/{job.id}"},
+        )
     size_kb = os.path.getsize(tmp_path) / 1024
     log.info(
         "Transcription request: %s (%.1f KB, language=%s, align=%s, "
@@ -233,6 +275,37 @@ def embed_speakers(
         len(result["speakers"]),
     )
     return JSONResponse(result)
+
+
+@app.get("/v1/jobs")
+async def list_jobs(request: Request, limit: int = 50) -> dict:
+    return {"jobs": _jobs(request).list(max(1, min(limit, 500)))}
+
+
+@app.get("/v1/jobs/{job_id}")
+async def get_job(request: Request, job_id: str) -> dict:
+    """State, stage and progress of a job; its result once ``status`` is ``done``."""
+    body = _jobs(request).get(job_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="no such job")
+    return body
+
+
+@app.get("/v1/jobs/{job_id}/files/{name}")
+async def get_job_file(request: Request, job_id: str, name: str):
+    """One output file of a finished job, by the name ``result.tracks`` lists."""
+    path = _jobs(request).file_path(job_id, name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="no such file")
+    return FileResponse(path, filename=name)
+
+
+@app.delete("/v1/jobs/{job_id}")
+async def delete_job(request: Request, job_id: str) -> dict:
+    """Cancel a queued or running job, or remove a finished one and its files."""
+    if not _jobs(request).cancel_or_delete(job_id):
+        raise HTTPException(status_code=404, detail="no such job")
+    return {"id": job_id, "deleted": True}
 
 
 if __name__ == "__main__":

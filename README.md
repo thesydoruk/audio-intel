@@ -269,6 +269,7 @@ over `.env`. Every variable is documented with its values and effect in
 | `MAX_CONCURRENT_REQUESTS` | `2`        | Requests processed at once; the rest wait in line                       |
 | `GPU_PARALLEL`            | `2`        | Model stages allowed on the GPU at once (0 = unlimited); batch waits behind interactive |
 | `UNLOAD_IDLE_MODELS`      | `0`        | Unload diarization / embeddings / sound events / alignment after `MODEL_IDLE_TTL_S` idle |
+| `SEPARATE_ENABLED`        | `1`        | Accept separation jobs (`separate=true`); `BATCH_CONCURRENT_JOBS`, `BATCH_QUEUE_MAX`, `JOBS_DIR` |
 | `MAX_QUEUED_REQUESTS`     | `8`        | Requests allowed to wait; beyond that the server answers `503`          |
 | `ASR_PARALLEL_WORKERS`    | `1`        | Whisper copies per request: faster on long files, more VRAM             |
 | `SPEAKERS_ENABLED`        | `0`        | Load diarization (needs `HF_TOKEN`, see above)                          |
@@ -308,6 +309,7 @@ outside scheduler:
 
 - `requests`: `in_flight`, `queued`, `max`, `queue_max`.
 - `gpu_tokens`: `in_use`, `waiting`, `max` (`GPU_PARALLEL`).
+- `batch`: `running`, `queued`, `max`, `queue_max` of the job lane and `jobs` counts by status.
 - `models.groups`: per group (`asr`, `diarization`, `speaker_embedding`, `sound_events`,
   `alignment`) whether it is `resident`, `in_use`, its `idle_s`, and load/unload counts;
   `models.unload_idle` and `idle_ttl_s` echo `UNLOAD_IDLE_MODELS` / `MODEL_IDLE_TTL_S`.
@@ -388,6 +390,32 @@ One timeline in `segments`, speech and sounds sorted by time and told apart by `
   L2-normalized `embedding` and the `embedding_model` that produced it.
 - With `align=true`: `alignment_requested`, `alignment_applied`, `alignment_failed`,
   `aligned_at`.
+
+### `POST /v1/audio/transcriptions` with `separate=true`
+
+The same upload becomes a **separation job**: the answer is `202` with `{"id", "status",
+"url"}` and a `Location` header, and the work runs on the batch lane (`BATCH_CONCURRENT_JOBS`
+at a time, `BATCH_QUEUE_MAX` waiting, `503` beyond that). The job separates the recording into
+one 48 kHz track per speaker plus the background bed, transcribes every speaker track on its
+own (speaker known before decoding, no diarization), embeds each speaker from its track, and
+with `sound_events=true` runs PANNs on the background stem. `language` and `align` apply as
+for a plain request.
+
+```bash
+curl -F "file=@cutscene.mp4" -F separate=true -F align=true \
+     http://localhost:8080/v1/audio/transcriptions          # → 202 {"id": "…", "url": "/v1/jobs/…"}
+curl http://localhost:8080/v1/jobs/<id>                      # status, stage, progress; result when done
+curl -O http://localhost:8080/v1/jobs/<id>/files/speaker_00_48k.wav
+curl -X DELETE http://localhost:8080/v1/jobs/<id>            # cancel, or remove a finished job
+```
+
+`GET /v1/jobs/{id}` returns `status` (`queued`, `running`, `done`, `failed`, `cancelled`),
+`stage`, `progress`, timestamps and, once done, `result`: the usual transcription body whose
+speech segments carry `speaker_id`, the `speakers` roster with embeddings, `overlaps`, and
+`tracks` naming the files `GET /v1/jobs/{id}/files/{name}` serves (`speakers`,
+`background`, `speech`, `master`, `rttm`, `metadata`). `GET /v1/jobs` lists recent jobs.
+Results are deleted `JOBS_RESULT_TTL_H` hours after they finish. Cancellation takes effect
+at the next stage boundary. Without `separate=true` nothing changes.
 
 ### `POST /v1/speakers/embed`
 

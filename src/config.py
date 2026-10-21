@@ -93,6 +93,15 @@ class Config:
     # Unload model groups other than Whisper after this long idle (UNLOAD_IDLE_MODELS=1).
     unload_idle_models: bool
     model_idle_ttl_s: float
+    # Batch lane: separation jobs (POST ... separate=true) and where they live.
+    separate_enabled: bool
+    separate_embeddings: str
+    separate_config: str | None
+    separate_device: str
+    batch_concurrent_jobs: int
+    batch_queue_max: int
+    jobs_dir: str
+    jobs_result_ttl_h: float
     vad_threshold: float
     vad_min_speech_ms: int
     vad_min_silence_ms: int
@@ -194,6 +203,14 @@ def load_config() -> Config:
         gpu_parallel=max(0, min(_int("GPU_PARALLEL", 2), 16)),
         unload_idle_models=_bool("UNLOAD_IDLE_MODELS", False),
         model_idle_ttl_s=max(1.0, _float("MODEL_IDLE_TTL_S", 600.0)),
+        separate_enabled=_bool("SEPARATE_ENABLED", True),
+        separate_embeddings=_str("SEPARATE_EMBEDDINGS", "speechbrain_ecapa"),
+        separate_config=_str("SEPARATE_CONFIG", "") or None,
+        separate_device=_str("SEPARATE_DEVICE", "") or _str("ASR_DEVICE", "cuda"),
+        batch_concurrent_jobs=max(1, min(_int("BATCH_CONCURRENT_JOBS", 1), 4)),
+        batch_queue_max=max(0, _int("BATCH_QUEUE_MAX", 8)),
+        jobs_dir=_str("JOBS_DIR", "./data/jobs"),
+        jobs_result_ttl_h=max(0.1, _float("JOBS_RESULT_TTL_H", 24.0)),
         vad_threshold=_float("VAD_SPEECH_THRESHOLD", 0.5),
         vad_min_speech_ms=_int("VAD_MIN_SPEECH_MS", 250),
         vad_min_silence_ms=_int("VAD_MIN_SILENCE_MS", 400),
