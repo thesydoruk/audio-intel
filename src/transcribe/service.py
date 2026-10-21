@@ -7,6 +7,11 @@ Pipeline:
   3. Transcribe each chunk by reading windows from the prepared WAV.
   4. Optionally align, diarize, and detect sound events — all reading from workspace files.
   5. Delete the workspace when the request completes.
+
+Models other than Whisper and VAD live in model groups (see
+:mod:`audio_intel.common.residency`): loaded on first use, optionally unloaded
+after idling. GPU-bound calls take a token from :class:`GpuTokens` so stages of
+concurrent requests do not pile onto the card at once.
 """
 
 from __future__ import annotations
@@ -21,6 +26,8 @@ from dataclasses import dataclass, field
 
 from audio_intel.audio.chunking import Chunk
 from audio_intel.audio.workspace import MediaWorkspace
+from audio_intel.common.gpu_tokens import GpuTokens
+from audio_intel.common.residency import ResidencyManager
 from audio_intel.config import Config
 from audio_intel.diarization.chunks import merge_speaker_ids_by_embedding, remap_segment_speaker_ids
 from audio_intel.diarization.embeddings import SpeakerEmbedder
@@ -83,6 +90,12 @@ class Transcriber:
         self._request_semaphore = threading.Semaphore(concurrent)
         self._queue_lock = threading.Lock()
         self._queued = 0
+        self._in_flight = 0
+        self._tokens = GpuTokens(cfg.gpu_parallel)
+        self._priority_local = threading.local()
+        self._residency = ResidencyManager(
+            unload_idle=cfg.unload_idle_models, idle_ttl_s=cfg.model_idle_ttl_s
+        )
         per_request_workers = cfg.whisper_parallel_workers
         whisper_pool_size = per_request_workers * concurrent
         log.info(
@@ -105,18 +118,32 @@ class Transcriber:
 
         self._vad = VadPipeline.from_server(cfg)
         self._vad.ensure_ready(concurrent)
+        # Whisper + VAD are the service itself: loaded here, never unloaded.
+        self._group_asr = self._residency.group(
+            "asr", load=lambda: None, unload=lambda: None, pinned=True
+        )
+        self._group_asr.mark_loaded()
 
         # AED / pyannote stay lazy until post-ASR so Whisper peak VRAM matches the
         # older in-repo server (Whisper + VAD only at startup on shared GPUs).
         self.aed = AudioEventDetector(cfg) if cfg.aed_enabled else None
         self.diarizer = SpeakerDiarizer(cfg) if cfg.diarization_enabled else None
         self.embedder = SpeakerEmbedder(cfg) if cfg.diarization_enabled else None
-        self._post_asr_ready_lock = threading.Lock()
-        self._aed_ready = False
-        self._speakers_ready = False
+        self._group_aed = self._residency.group(
+            "sound_events", load=self._load_aed, unload=self._unload_aed
+        )
+        self._group_diarize = self._residency.group(
+            "diarization", load=self._load_diarizer, unload=self._unload_diarizer
+        )
+        self._group_embed = self._residency.group(
+            "speaker_embedding", load=self._load_embedder, unload=self._unload_embedder
+        )
 
         self._aligners: dict[str, object] = {}
         self._aligners_lock = threading.Lock()
+        self._group_align = self._residency.group(
+            "alignment", load=self._preload_alignment_models, unload=self._release_aligners
+        )
         if cfg.diarization_enabled:
             log.info(
                 "Speaker diarization enabled (lazy load; device=%s, pipeline_workers=%d, "
@@ -133,11 +160,13 @@ class Transcriber:
             )
         if cfg.alignment_enabled:
             self._preload_alignment_models()
+            self._group_align.mark_loaded()
             log.info(
                 "WhisperX alignment enabled (device=%s, preloaded=%s)",
                 cfg.alignment_device or cfg.device,
                 ", ".join(self._aligners),
             )
+        self._residency.start()
 
     @contextmanager
     def _request_slot(self) -> Iterator[None]:
@@ -159,10 +188,76 @@ class Transcriber:
             finally:
                 with self._queue_lock:
                     self._queued -= 1
+        with self._queue_lock:
+            self._in_flight += 1
         try:
             yield
         finally:
+            with self._queue_lock:
+                self._in_flight -= 1
             self._request_semaphore.release()
+
+    def close(self) -> None:
+        """Stop the idle-model janitor (server shutdown)."""
+        self._residency.stop()
+
+    def snapshot(self) -> dict:
+        """What the process is doing right now, for ``/health``."""
+        with self._queue_lock:
+            in_flight, queued = self._in_flight, self._queued
+        return {
+            "requests": {
+                "in_flight": in_flight,
+                "queued": queued,
+                "max": self.cfg.max_concurrent_requests,
+                "queue_max": self.cfg.max_queued_requests,
+            },
+            "gpu_tokens": self._tokens.snapshot(),
+            "models": self._residency.snapshot(),
+        }
+
+    def _priority(self) -> int:
+        """GPU-token priority of the request this thread serves (0 = interactive).
+
+        Set per request in :meth:`transcribe`; worker threads a stage spawns
+        inherit the default, which is the interactive priority.
+        """
+        return int(getattr(self._priority_local, "priority", 0))
+
+    # ---- model group loaders ------------------------------------------------------
+
+    def _load_aed(self) -> None:
+        _release_accelerator_memory()
+        log.info("Lazy-loading sound-event models")
+        self.aed.ensure_ready()  # type: ignore[union-attr]
+
+    def _unload_aed(self) -> None:
+        self.aed.release()  # type: ignore[union-attr]
+        _release_accelerator_memory()
+
+    def _load_diarizer(self) -> None:
+        _release_accelerator_memory()
+        log.info("Lazy-loading speaker diarization models")
+        self.diarizer.ensure_ready()  # type: ignore[union-attr]
+        _restore_tf32(self.cfg)
+
+    def _unload_diarizer(self) -> None:
+        self.diarizer.release()  # type: ignore[union-attr]
+        _release_accelerator_memory()
+
+    def _load_embedder(self) -> None:
+        self.embedder.ensure_ready()  # type: ignore[union-attr]
+
+    def _unload_embedder(self) -> None:
+        self.embedder.release()  # type: ignore[union-attr]
+        _release_accelerator_memory()
+
+    def _release_aligners(self) -> None:
+        with self._aligners_lock:
+            for aligner in self._aligners.values():
+                aligner.release()  # type: ignore[attr-defined]
+            self._aligners.clear()
+        _release_accelerator_memory()
 
     def transcribe(
         self,
@@ -174,8 +269,13 @@ class Transcriber:
         sound_events: bool = False,
         aed_overrides: dict | None = None,
         aed_debug_top_n: int = 0,
+        priority: int = 0,
     ) -> dict:
-        """Transcribe a media file into a verbose-JSON-shaped dict."""
+        """Transcribe a media file into a verbose-JSON-shaped dict.
+
+        ``priority`` orders this request's GPU stages against others (lower first).
+        """
+        self._priority_local.priority = priority
         with self._request_slot():
             return self._run(
                 path,
@@ -428,12 +528,13 @@ class Transcriber:
             return None
 
         try:
-            transcription = self._engine.transcribe_array(
-                clip,
-                language=language,
-                time_offset=chunk.start,
-                word_timestamps=word_timestamps,
-            )
+            with self._tokens.hold(self._priority()):
+                transcription = self._engine.transcribe_array(
+                    clip,
+                    language=language,
+                    time_offset=chunk.start,
+                    word_timestamps=word_timestamps,
+                )
         finally:
             del clip
 
@@ -644,6 +745,26 @@ class Transcriber:
     ) -> tuple[list[dict], int, str | None]:
         """Run CTC on one language (and optional chunk) group."""
         local = shift_speech_segments(subset, -time_offset) if time_offset else subset
+        with self._group_align.use():
+            return self._align_loaded(
+                language,
+                local,
+                audio_path=audio_path,
+                duration_sec=duration_sec,
+                audio=audio,
+                time_offset=time_offset,
+            )
+
+    def _align_loaded(
+        self,
+        language: str,
+        local: list[dict],
+        *,
+        audio_path: str,
+        duration_sec: float,
+        audio: object | None,
+        time_offset: float,
+    ) -> tuple[list[dict], int, str | None]:
         aligner = self._ensure_aligner(language)
         transcript = speech_segments_to_transcript(
             cfg=self.cfg,
@@ -654,27 +775,16 @@ class Transcriber:
             language_override=None,
             language=language,
         )
-        aligned = aligner.align_transcript(  # type: ignore[union-attr]
-            transcript,
-            audio_path=audio_path,
-            audio=audio,
-        )
+        with self._tokens.hold(self._priority()):
+            aligned = aligner.align_transcript(  # type: ignore[union-attr]
+                transcript,
+                audio_path=audio_path,
+                audio=audio,
+            )
         merged, failed_count = merge_aligned_speech_segments(local, aligned)
         if time_offset:
             merged = shift_speech_segments(merged, time_offset)
         return merged, failed_count, aligned.aligned_at
-
-    def _ensure_aed_ready(self) -> None:
-        """Load PANNs weights on first sound-event request."""
-        if self.aed is None or self._aed_ready:
-            return
-        with self._post_asr_ready_lock:
-            if self._aed_ready:
-                return
-            _release_accelerator_memory()
-            log.info("Lazy-loading sound-event models")
-            self.aed.ensure_ready()
-            self._aed_ready = True
 
     def embed_speakers(
         self,
@@ -691,8 +801,7 @@ class Transcriber:
         """
         if self.embedder is None:
             raise RuntimeError("Speaker embeddings are disabled (SPEAKERS_ENABLED=0)")
-        with self._request_slot():
-            self._ensure_embedder_ready()
+        with self._request_slot(), self._group_embed.use():
             with MediaWorkspace.prepare(path) as media:
                 from audio_intel.audio.decode import SAMPLE_RATE
 
@@ -701,13 +810,14 @@ class Transcriber:
                     for sid, spans in spans_by_speaker.items()
                     for start, end in spans
                 ]
-                embeddings = self.embedder.embed_speakers(
-                    media.whisper_path,
-                    intervals,
-                    sample_rate=SAMPLE_RATE,
-                    min_speech_s=min_speech_s,
-                    max_clip_s=max_clip_s,
-                )
+                with self._tokens.hold(self._priority()):
+                    embeddings = self.embedder.embed_speakers(
+                        media.whisper_path,
+                        intervals,
+                        sample_rate=SAMPLE_RATE,
+                        min_speech_s=min_speech_s,
+                        max_clip_s=max_clip_s,
+                    )
                 return {
                     "duration": round(media.duration_s, 3),
                     "embedding_model": self.embedder.model_id,
@@ -724,30 +834,6 @@ class Transcriber:
                     ],
                 }
 
-    def _ensure_embedder_ready(self) -> None:
-        """Load only the embedding models (the span endpoint needs no pipeline)."""
-        if self.embedder is None or self._speakers_ready:
-            return
-        with self._post_asr_ready_lock:
-            if self._speakers_ready:
-                return
-            self.embedder.ensure_ready()
-
-    def _ensure_speakers_ready(self) -> None:
-        """Load pyannote pipelines/embeddings on first diarization request."""
-        if self.diarizer is None or self._speakers_ready:
-            return
-        with self._post_asr_ready_lock:
-            if self._speakers_ready:
-                return
-            _release_accelerator_memory()
-            log.info("Lazy-loading speaker diarization models")
-            self.diarizer.ensure_ready()
-            if self.embedder is not None:
-                self.embedder.ensure_ready()
-            self._speakers_ready = True
-            _restore_tf32(self.cfg)
-
     def _apply_diarization(
         self,
         media: MediaWorkspace,
@@ -760,32 +846,41 @@ class Transcriber:
         still returns its transcript, and the next diarize request retries the load.
         """
         try:
-            self._ensure_speakers_ready()
+            with self._group_diarize.use(), self._group_embed.use():
+                return self._diarize_loaded(media, speech_segments)
         except Exception:  # noqa: BLE001 — diarization is best-effort
             log.exception(
                 "Speaker diarization models failed to load; returning speech without "
                 "speaker_id (check HF_TOKEN and the model's terms on Hugging Face)"
             )
             return speech_segments, []
+
+    def _diarize_loaded(
+        self,
+        media: MediaWorkspace,
+        speech_segments: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
         started = time.perf_counter()
         speakers: list[dict] = []
         updated_segments = speech_segments
         log.info("Speaker pipeline starting (%d speech segments)", len(speech_segments))
         try:
-            intervals = self.diarizer.diarize(  # type: ignore[union-attr]
-                media.whisper_path,
-                duration_s=media.duration_s,
-                link_embedder=self.embedder,
-            )
+            with self._tokens.hold(self._priority()):
+                intervals = self.diarizer.diarize(  # type: ignore[union-attr]
+                    media.whisper_path,
+                    duration_s=media.duration_s,
+                    link_embedder=self.embedder,
+                )
             updated_segments, speakers = assign_speakers_to_segments(speech_segments, intervals)
             if self.embedder is not None and intervals:
                 from audio_intel.audio.decode import SAMPLE_RATE
 
-                embeddings = self.embedder.embed_speakers(
-                    media.whisper_path,
-                    intervals,
-                    sample_rate=SAMPLE_RATE,
-                )
+                with self._tokens.hold(self._priority()):
+                    embeddings = self.embedder.embed_speakers(
+                        media.whisper_path,
+                        intervals,
+                        sample_rate=SAMPLE_RATE,
+                    )
                 merge_map = merge_speaker_ids_by_embedding(
                     embeddings,
                     threshold=self.cfg.diarization_link_threshold,
@@ -838,7 +933,15 @@ class Transcriber:
         """Run PANNs sound-event detection at 32 kHz; never fails the request."""
         if self.aed is None or media.aed_path is None:
             return [], []
-        self._ensure_aed_ready()
+        with self._group_aed.use():
+            return self._detect_sounds_loaded(media, aed_overrides, aed_debug_top_n)
+
+    def _detect_sounds_loaded(
+        self,
+        media: MediaWorkspace,
+        aed_overrides: dict | None,
+        aed_debug_top_n: int,
+    ) -> tuple[list[dict], list[dict]]:
         started = time.perf_counter()
         try:
             # Keep full precision — rounding up to 0.1s overshoots the WAV and
@@ -848,12 +951,13 @@ class Transcriber:
                 "Sound detection starting: %.1fs at %d Hz", duration_s, self.cfg.aed_sample_rate
             )
             params = AedParams.from_config(self.cfg).with_overrides(aed_overrides)
-            events, debug = self.aed.detect_file(
-                media.aed_path,
-                params=params,
-                debug_top_n=aed_debug_top_n,
-                duration_s=duration_s,
-            )
+            with self._tokens.hold(self._priority()):
+                events, debug = self.aed.detect_file(  # type: ignore[union-attr]
+                    media.aed_path,
+                    params=params,
+                    debug_top_n=aed_debug_top_n,
+                    duration_s=duration_s,
+                )
             log.info(
                 "Sound detection finished in %.1fs: %d events",
                 time.perf_counter() - started,

@@ -39,6 +39,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from audio_intel.config import load_config
+from audio_intel.server.health import build_health_body, gpu_snapshot
 from audio_intel.server.transcription import (
     build_aed_overrides,
     build_transcription_body,
@@ -68,7 +69,10 @@ _UPLOAD_COPY_BLOCK = 1024 * 1024
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.transcriber = Transcriber(cfg)
-    yield
+    try:
+        yield
+    finally:
+        app.state.transcriber.close()
 
 
 app = FastAPI(title="audio-intel", version=VERSION, lifespan=lifespan)
@@ -92,22 +96,20 @@ def _busy(exc: ServiceBusyError) -> HTTPException:
 
 
 @app.get("/health")
-async def health() -> dict:
-    """Liveness probe used by the docker healthcheck.
+async def health(request: Request) -> dict:
+    """Liveness probe used by the docker healthcheck, plus what the process holds.
 
     Async on purpose: it must answer even while every worker thread of the
-    server is busy with (or waiting on) a transcription.
+    server is busy with (or waiting on) a transcription. Beyond the flags, the
+    body reports resident model groups, request lanes, GPU tokens and VRAM so
+    an outside scheduler can see what this instance is doing.
     """
-    return {
-        "status": "ok",
-        "version": VERSION,
-        "model": cfg.model,
-        "diarization_enabled": cfg.diarization_enabled,
-        "speaker_embedding_model": (
-            cfg.diarization_embedding_model if cfg.diarization_enabled else None
-        ),
-        "alignment_enabled": cfg.alignment_enabled,
-    }
+    return build_health_body(
+        version=VERSION,
+        cfg=cfg,
+        service=getattr(request.app.state, "transcriber", None),
+        gpu=gpu_snapshot(),
+    )
 
 
 @app.post("/v1/audio/transcriptions")

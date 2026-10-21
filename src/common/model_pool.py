@@ -54,3 +54,13 @@ class ModelPool(Generic[T]):
     def release(self, model: T) -> None:
         """Return a model to the pool."""
         self._queue.put(model)
+
+    def clear(self) -> None:
+        """Drop every copy. Only call when no copy is checked out (see ModelGroup)."""
+        with self._init_lock:
+            while not self._queue.empty():
+                try:
+                    self._queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._models.clear()
