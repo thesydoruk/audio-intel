@@ -2,7 +2,7 @@
 # Local install into .venv: the service, dev tools, and WhisperX alignment.
 #
 # For a CUDA build of torch, point TORCH_INDEX at the matching PyTorch wheel index
-# before running, e.g. TORCH_INDEX=https://download.pytorch.org/whl/cu126
+# before running, e.g. TORCH_INDEX=https://download.pytorch.org/whl/cu128
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

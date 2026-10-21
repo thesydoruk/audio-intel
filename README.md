@@ -43,6 +43,8 @@ Input: anything ffmpeg can decode (wav, mp3, m4a, ogg, mp4, mov, …). One file 
 **Hardware.** An NVIDIA GPU is strongly recommended: Whisper `large-v3` in float16 needs about
 4.5 GB of VRAM per copy, and diarization adds about 2 GB. CPU works too (see
 [CPU-only](#cpu-only)), but expect transcription to run many times slower than on a GPU.
+The Docker image and the `cu128` torch index below cover every card from Ampere to Blackwell
+(RTX 50xx).
 
 **Disk.** The Docker image is about 6 GB to download (13 GB unpacked). Models are downloaded
 on first use into a cache that survives restarts: Whisper `large-v3` about 3 GB, pyannote and
@@ -55,7 +57,7 @@ PANNs a few hundred MB.
 No clone needed. First check that Docker can see your GPU:
 
 ```bash
-docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
 ```
 
 If that prints your GPU, start the service:
@@ -136,11 +138,11 @@ For a GPU build on Windows (or a specific CUDA version), point `setup` at the Py
 first:
 
 ```bash
-TORCH_INDEX=https://download.pytorch.org/whl/cu126 ./scripts/setup.sh
+TORCH_INDEX=https://download.pytorch.org/whl/cu128 ./scripts/setup.sh
 ```
 
 ```powershell
-$env:TORCH_INDEX = "https://download.pytorch.org/whl/cu126"; .\scripts\setup.ps1
+$env:TORCH_INDEX = "https://download.pytorch.org/whl/cu128"; .\scripts\setup.ps1
 ```
 
 Locally, `MODEL_CACHE_DIR` in `.env` decides where models go (default `./data/whisper`).
@@ -506,6 +508,11 @@ AED and speaker helpers).
 through torchcodec/FFmpeg, imports the native stack (torch, pyannote, WhisperX alignment,
 CTranslate2), and runs the tests against the image's own dependencies. CI runs it whenever
 the image recipe changes.
+
+`scripts/gpu-smoke.sh <image> <sample media> [model] [diarize] [align]` is the GPU half, run
+on the host that will serve: it asserts torch ships kernels for the card (a Blackwell card
+needs the CUDA 12.8 image), that CTranslate2 sees the GPU, then starts the service and
+transcribes the sample. `HF_TOKEN` in the environment enables `diarize=1`.
 
 ## Releases
 

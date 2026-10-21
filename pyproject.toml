@@ -33,8 +33,9 @@ classifiers = [
 ]
 dependencies = [
     "faster-whisper>=1.2.0",
-    # cuDNN 9 (CUDA 12.6 runtime image / torch 2.5+); 4.4.x looks for libcudnn_ops_infer.so.8.
-    "ctranslate2>=4.5.0,<5",
+    # 4.6.3 is the first release built for CUDA 12.8, which Blackwell (RTX 50xx)
+    # needs; cuDNN 9 as before.
+    "ctranslate2>=4.6.3,<5",
     "numpy>=1.24",
     "soundfile>=0.12",
     "python-dotenv>=1.0.0",
