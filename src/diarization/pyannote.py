@@ -25,6 +25,28 @@ if TYPE_CHECKING:
 log = logging.getLogger("audio-intel")
 
 
+class LockedModel:
+    """A loaded model copy that takes its pool lock around every call.
+
+    Handed to the separation pipeline so it can run the service's pyannote
+    pipeline without racing an interactive request on the same copy.
+    """
+
+    def __init__(self, target: Any, lock: threading.Lock) -> None:
+        self._target = target
+        self._lock = lock
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return self._target(*args, **kwargs)
+
+    def to(self, *args: Any, **kwargs: Any) -> LockedModel:
+        return self  # already on the service's device
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target, name)
+
+
 class SpeakerDiarizer:
     """Pre-loaded pyannote diarization pipelines shared across concurrent requests."""
 
@@ -43,6 +65,11 @@ class SpeakerDiarizer:
         """Load every pyannote diarization pipeline copy."""
         for index in range(self._count):
             self._load_pipeline(index)
+
+    def shared_pipeline(self, index: int = 0) -> LockedModel:
+        """Copy ``index`` for another consumer, loaded and lock-guarded per call."""
+        self._load_pipeline(index)
+        return LockedModel(self._pipelines[index], self._locks[index])
 
     def release(self) -> None:
         """Drop every pipeline copy; the next use loads them again."""

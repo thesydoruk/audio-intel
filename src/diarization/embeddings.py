@@ -54,6 +54,13 @@ class SpeakerEmbedder:
         for index in range(self._count):
             self._load_inference(index)
 
+    def shared_inference(self, index: int = 0):
+        """Copy ``index`` for another consumer, loaded and lock-guarded per call."""
+        from audio_intel.diarization.pyannote import LockedModel
+
+        self._load_inference(index)
+        return LockedModel(self._inferences[index], self._locks[index])
+
     def release(self) -> None:
         """Drop every model copy; the next use loads them again (dimension is kept)."""
         with self._init_lock:

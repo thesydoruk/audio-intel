@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,8 @@ class SpeakerExtractPipeline:
         )
         self.bank = SpeakerProfileBank(self.cfg.get("embeddings", {}))
         self.tracker = GlobalSpeakerTracker(self.bank, self.cfg.get("tracking", {}))
+        # Inside the transcription service this is its GPU-token guard; alone, a no-op.
+        self._gpu = (self.cfg.get("_providers") or {}).get("gpu_guard") or nullcontext
 
         self._separator = None
         self._diarizer = None
@@ -375,9 +378,10 @@ class SpeakerExtractPipeline:
         if pipe.get("run_overlap", True):
             od = self.overlap_detector()
             od.ensure_loaded()
-            overlaps = od.detect(
-                speech16, proc_sr, offset=0.0, diarization=DiarizationResult(segments=segments)
-            )
+            with self._gpu():
+                overlaps = od.detect(
+                    speech16, proc_sr, offset=0.0, diarization=DiarizationResult(segments=segments)
+                )
             self._maybe_unload(od)
         log_cb(f"Overlap regions: {len(overlaps)} ({sum(o.span.duration for o in overlaps):.1f} s)")
         if stop_after == "overlap":
@@ -480,7 +484,8 @@ class SpeakerExtractPipeline:
         sep = self.separator()
         sep.ensure_loaded()
         master, sr = read_audio(master_path)
-        speech, background = sep.separate(master, sr)
+        with self._gpu():
+            speech, background = sep.separate(master, sr)
         del master
         subtype = str(out_cfg.get("subtype", "PCM_24"))
         write_wav(speech_path, speech, sr, subtype=subtype)
@@ -522,7 +527,8 @@ class SpeakerExtractPipeline:
         log_cb("Diarizing the full recording")
         d = self.diarizer()
         d.ensure_loaded()
-        result = d.process(speech16, sr, min_speakers=min_spk, max_speakers=max_spk, offset=0.0)
+        with self._gpu():
+            result = d.process(speech16, sr, min_speakers=min_spk, max_speakers=max_spk, offset=0.0)
         self._maybe_unload(d)
         self.cache.save_json("diarization", key, _segments_to_json(result.segments))
         return result.segments
@@ -578,13 +584,22 @@ class SpeakerExtractPipeline:
             else:
                 d = self.diarizer()
                 d.ensure_loaded()
-                segs = d.process(
-                    audio16, sr, min_speakers=min_spk, max_speakers=max_spk, offset=chunk.span.start
-                ).segments
+                with self._gpu():
+                    segs = d.process(
+                        audio16,
+                        sr,
+                        min_speakers=min_spk,
+                        max_speakers=max_spk,
+                        offset=chunk.span.start,
+                    ).segments
                 self.cache.save_json("diarization", key, _segments_to_json(segs))
-            overlaps = od.detect(
-                audio16, sr, offset=chunk.span.start, diarization=DiarizationResult(segments=segs)
-            )
+            with self._gpu():
+                overlaps = od.detect(
+                    audio16,
+                    sr,
+                    offset=chunk.span.start,
+                    diarization=DiarizationResult(segments=segs),
+                )
 
             # Local embeddings from the longest clean segment per local label
             reliable = self._reliable_segments(segs, overlaps)
@@ -608,7 +623,8 @@ class SpeakerExtractPipeline:
                 clip = _slice_16k(speech16, sr, best.span)
                 if estimate_snr_db(clip) < float(emb_cfg.get("min_snr_db", 0.0)):
                     continue
-                vec = emb.embed(clip, sr)
+                with self._gpu():
+                    vec = emb.embed(clip, sr)
                 all_local = [s for s in segs if s.local_speaker == local_id]
                 total = sum(s.span.duration for s in all_local)
                 ov_dur = sum(sum(s.span.overlap(o.span) for o in overlaps) for s in all_local)
@@ -727,7 +743,8 @@ class SpeakerExtractPipeline:
                 clip = _slice_16k(speech16, sr, seg.span)
                 if len(clip) < int(0.3 * sr):
                     continue
-                vec = emb.embed(clip, sr)
+                with self._gpu():
+                    vec = emb.embed(clip, sr)
                 sample = EmbeddingSample(
                     sid,
                     vec,
@@ -831,13 +848,14 @@ class SpeakerExtractPipeline:
         )
         tse = self.tse()
         tse.ensure_loaded()
-        extracted = tse.extract(
-            mix16,
-            proc_sr,
-            target_embedding=centroid,
-            reference_audio=enroll,
-            reference_sample_rate=enroll_sr,
-        )
+        with self._gpu():
+            extracted = tse.extract(
+                mix16,
+                proc_sr,
+                target_embedding=centroid,
+                reference_audio=enroll,
+                reference_sample_rate=enroll_sr,
+            )
         if enhance:
             e16 = self.enhancer_16k()
             e16.ensure_loaded()

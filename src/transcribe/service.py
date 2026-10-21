@@ -21,7 +21,7 @@ import threading
 import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 
 from audio_intel.audio.chunking import Chunk
@@ -34,6 +34,7 @@ from audio_intel.diarization.embeddings import SpeakerEmbedder
 from audio_intel.diarization.merge import assign_speakers_to_segments, build_speaker_roster
 from audio_intel.diarization.pyannote import SpeakerDiarizer
 from audio_intel.events.panns import AedParams, AudioEventDetector
+from audio_intel.jobs.separate_job import SeparationEngine
 from audio_intel.transcribe.alignment import (
     alignment_preload_languages,
     assign_segment_indices_to_chunks,
@@ -166,6 +167,20 @@ class Transcriber:
                 cfg.alignment_device or cfg.device,
                 ", ".join(self._aligners),
             )
+        # Separation inside the service: borrows the pyannote copies above and
+        # takes GPU tokens at batch priority; Demucs / SepFormer are its own group.
+        self.separation: SeparationEngine | None = None
+        self._group_separate = None
+        if cfg.separate_enabled:
+            providers: dict[str, object] = {"gpu_guard": lambda: self._tokens.hold(1)}
+            if self.diarizer is not None:
+                providers["diarization"] = self.diarizer.shared_pipeline
+            if self.embedder is not None and cfg.separate_embeddings == "wespeaker":
+                providers["embedding"] = self.embedder.shared_inference
+            self.separation = SeparationEngine(cfg, providers)
+            self._group_separate = self._residency.group(
+                "separation", load=self.separation.load, unload=self.separation.unload
+            )
         self._residency.start()
 
     @contextmanager
@@ -215,6 +230,60 @@ class Transcriber:
             "gpu_tokens": self._tokens.snapshot(),
             "models": self._residency.snapshot(),
         }
+
+    # ---- batch lane entry points ---------------------------------------------------
+
+    @contextmanager
+    def separation_models(self) -> Iterator[None]:
+        """Hold every model group a separation job borrows for its duration."""
+        if self.separation is None or self._group_separate is None:
+            raise RuntimeError("Speaker separation is disabled (SEPARATE_ENABLED=0)")
+        with ExitStack() as stack:
+            if "diarization" in self.separation.providers:
+                stack.enter_context(self._group_diarize.use())
+            if "embedding" in self.separation.providers:
+                stack.enter_context(self._group_embed.use())
+            stack.enter_context(self._group_separate.use())
+            yield
+
+    def transcribe_batch(
+        self,
+        path: str,
+        *,
+        override_language: str | None = None,
+        align: bool = False,
+        priority: int = 1,
+    ) -> dict:
+        """Transcribe one file from the batch lane: no request slot, batch priority."""
+        self._priority_local.priority = priority
+        return self._run(path, override_language, align=align, diarize=False, sound_events=False)
+
+    def detect_sounds_file(self, path: str, *, priority: int = 1) -> list[dict]:
+        """Sound events of one file (a background stem) from the batch lane."""
+        self._priority_local.priority = priority
+        with MediaWorkspace.prepare(
+            path, need_aed=True, aed_sample_rate=self.cfg.aed_sample_rate
+        ) as media:
+            events, _debug = self._detect_sounds(media)
+        return events
+
+    def embed_spans(
+        self,
+        path: str,
+        spans_by_speaker: dict[str, list[tuple[float, float]]],
+        *,
+        min_speech_s: float = 3.0,
+        max_clip_s: float = 30.0,
+        priority: int = 1,
+    ) -> dict:
+        """Speaker vectors from known spans, from the batch lane (no request slot)."""
+        if self.embedder is None:
+            raise RuntimeError("Speaker embeddings are disabled (SPEAKERS_ENABLED=0)")
+        self._priority_local.priority = priority
+        with self._group_embed.use():
+            return self._embed_spans_loaded(
+                path, spans_by_speaker, min_speech_s=min_speech_s, max_clip_s=max_clip_s
+            )
 
     def _priority(self) -> int:
         """GPU-token priority of the request this thread serves (0 = interactive).
@@ -802,37 +871,49 @@ class Transcriber:
         if self.embedder is None:
             raise RuntimeError("Speaker embeddings are disabled (SPEAKERS_ENABLED=0)")
         with self._request_slot(), self._group_embed.use():
-            with MediaWorkspace.prepare(path) as media:
-                from audio_intel.audio.decode import SAMPLE_RATE
+            return self._embed_spans_loaded(
+                path, spans_by_speaker, min_speech_s=min_speech_s, max_clip_s=max_clip_s
+            )
 
-                intervals = [
-                    {"start": start, "end": end, "speaker_id": sid}
+    def _embed_spans_loaded(
+        self,
+        path: str,
+        spans_by_speaker: dict[str, list[tuple[float, float]]],
+        *,
+        min_speech_s: float,
+        max_clip_s: float,
+    ) -> dict:
+        with MediaWorkspace.prepare(path) as media:
+            from audio_intel.audio.decode import SAMPLE_RATE
+
+            intervals = [
+                {"start": start, "end": end, "speaker_id": sid}
+                for sid, spans in spans_by_speaker.items()
+                for start, end in spans
+            ]
+            with self._tokens.hold(self._priority()):
+                embeddings = self.embedder.embed_speakers(
+                    media.whisper_path,
+                    intervals,
+                    sample_rate=SAMPLE_RATE,
+                    min_speech_s=min_speech_s,
+                    max_clip_s=max_clip_s,
+                )
+            return {
+                "duration": round(media.duration_s, 3),
+                "embedding_model": self.embedder.model_id,
+                "dimension": self.embedder.dimension,
+                "speakers": [
+                    {
+                        "id": sid,
+                        "speech_seconds": round(
+                            sum(max(0.0, end - start) for start, end in spans), 3
+                        ),
+                        "embedding": embeddings.get(sid),
+                    }
                     for sid, spans in spans_by_speaker.items()
-                    for start, end in spans
-                ]
-                with self._tokens.hold(self._priority()):
-                    embeddings = self.embedder.embed_speakers(
-                        media.whisper_path,
-                        intervals,
-                        sample_rate=SAMPLE_RATE,
-                        min_speech_s=min_speech_s,
-                        max_clip_s=max_clip_s,
-                    )
-                return {
-                    "duration": round(media.duration_s, 3),
-                    "embedding_model": self.embedder.model_id,
-                    "dimension": self.embedder.dimension,
-                    "speakers": [
-                        {
-                            "id": sid,
-                            "speech_seconds": round(
-                                sum(max(0.0, end - start) for start, end in spans), 3
-                            ),
-                            "embedding": embeddings.get(sid),
-                        }
-                        for sid, spans in spans_by_speaker.items()
-                    ],
-                }
+                ],
+            }
 
     def _apply_diarization(
         self,
