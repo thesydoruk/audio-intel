@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import tempfile
 import unittest
@@ -66,14 +67,16 @@ class JobsApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        # The package resolves ``app`` lazily through __getattr__, so a string
+        # target would patch the FastAPI object on Python 3.10; patch the module.
+        app_module = importlib.import_module("audio_intel.server.app")
         patches = [
-            mock.patch("audio_intel.server.app.Transcriber"),
-            mock.patch("audio_intel.server.app.JobService"),
+            mock.patch.object(app_module, "Transcriber"),
+            mock.patch.object(app_module, "JobService"),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        from audio_intel.server import app as app_module
 
         self.app_module = app_module
         self.client = TestClient(app_module.app)
