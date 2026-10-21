@@ -44,6 +44,11 @@ class SpeakerDiarizer:
         for index in range(self._count):
             self._load_pipeline(index)
 
+    def release(self) -> None:
+        """Drop every pipeline copy; the next use loads them again."""
+        with self._init_lock:
+            self._pipelines = [None] * self._count
+
     def _load_pipeline(self, index: int) -> None:
         if self._pipelines[index] is not None:
             return

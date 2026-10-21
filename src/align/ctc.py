@@ -44,6 +44,10 @@ class CTCAligner:
             ) from exc
         self._pool.ensure_ready(num_workers)
 
+    def release(self) -> None:
+        """Drop every align model copy."""
+        self._pool.clear()
+
     def align_transcript(
         self,
         transcript: TranscriptResult,

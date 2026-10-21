@@ -54,6 +54,11 @@ class SpeakerEmbedder:
         for index in range(self._count):
             self._load_inference(index)
 
+    def release(self) -> None:
+        """Drop every model copy; the next use loads them again (dimension is kept)."""
+        with self._init_lock:
+            self._inferences = [None] * self._count
+
     def _load_inference(self, index: int) -> None:
         if self._inferences[index] is not None:
             return

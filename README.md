@@ -263,6 +263,7 @@ over `.env`. Every variable is documented with its values and effect in
 | `ASR_HALLUCINATION_FILTER` | `1`      | Drop decoded text that no VAD speech backs (music, padding); see `.env.example` |
 | `ASR_DEVICE`              | `cuda`     | `cpu` to run without a GPU (pair with `ASR_COMPUTE_TYPE=int8`)          |
 | `MAX_CONCURRENT_REQUESTS` | `2`        | Requests processed at once; the rest wait in line                       |
+| `UNLOAD_IDLE_MODELS`      | `0`        | Unload diarization / embeddings / sound events / alignment after `MODEL_IDLE_TTL_S` idle |
 | `MAX_QUEUED_REQUESTS`     | `8`        | Requests allowed to wait; beyond that the server answers `503`          |
 | `ASR_PARALLEL_WORKERS`    | `1`        | Whisper copies per request: faster on long files, more VRAM             |
 | `SPEAKERS_ENABLED`        | `0`        | Load diarization (needs `HF_TOKEN`, see above)                          |
@@ -297,7 +298,15 @@ Variable groups:
 ### `GET /health`
 
 Liveness probe. Returns `status`, `version`, `model`, flags for enabled capabilities, and
-`speaker_embedding_model` when diarization is enabled.
+`speaker_embedding_model` when diarization is enabled, plus what the process holds, for an
+outside scheduler:
+
+- `requests`: `in_flight`, `queued`, `max`, `queue_max`.
+- `models.groups`: per group (`asr`, `diarization`, `speaker_embedding`, `sound_events`,
+  `alignment`) whether it is `resident`, `in_use`, its `idle_s`, and load/unload counts;
+  `models.unload_idle` and `idle_ttl_s` echo `UNLOAD_IDLE_MODELS` / `MODEL_IDLE_TTL_S`.
+- `gpu`: device name, device-wide `vram_used_mb` / `vram_total_mb` (every process on the
+  card) and this process's `torch_reserved_mb`; `null` without CUDA.
 
 ### `POST /v1/audio/transcriptions`
 

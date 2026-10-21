@@ -86,7 +86,7 @@ class TranscriberLazyPostAsrLoadingTest(unittest.TestCase):
         self.assertIs(transcriber.aed, aed)
         self.assertIs(transcriber.diarizer, diarizer)
 
-    def test_post_asr_helpers_load_models_once(self) -> None:
+    def test_model_groups_load_once(self) -> None:
         cfg = replace(load_config(), aed_enabled=True, diarization_enabled=True)
         vad = mock.MagicMock()
         aed = mock.MagicMock()
@@ -103,14 +103,18 @@ class TranscriberLazyPostAsrLoadingTest(unittest.TestCase):
             vad_cls.from_server.return_value = vad
             transcriber = Transcriber(cfg)
 
-        transcriber._ensure_aed_ready()
-        transcriber._ensure_aed_ready()
+        with transcriber._group_aed.use():
+            pass
+        with transcriber._group_aed.use():
+            pass
         aed.ensure_ready.assert_called_once()
 
-        transcriber._ensure_speakers_ready()
-        transcriber._ensure_speakers_ready()
+        for _ in range(2):
+            with transcriber._group_diarize.use(), transcriber._group_embed.use():
+                pass
         diarizer.ensure_ready.assert_called_once()
         embedder.ensure_ready.assert_called_once()
+        self.assertTrue(transcriber.snapshot()["models"]["groups"]["diarization"]["resident"])
 
 
 if __name__ == "__main__":

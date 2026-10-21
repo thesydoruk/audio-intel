@@ -343,6 +343,10 @@ class AudioEventDetector:
         self._pool.ensure_ready(pool_size)
         log.info("PANNs model%s loaded", "" if pool_size == 1 else " copies")
 
+    def release(self) -> None:
+        """Drop every PANNs copy; the next use loads them again."""
+        self._pool.clear()
+
     def _create_model(self) -> object:
         from panns_inference import SoundEventDetection, labels  # type: ignore
 
