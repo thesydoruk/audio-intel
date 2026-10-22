@@ -204,7 +204,7 @@ def load_config() -> Config:
         unload_idle_models=_bool("UNLOAD_IDLE_MODELS", False),
         model_idle_ttl_s=max(1.0, _float("MODEL_IDLE_TTL_S", 600.0)),
         separate_enabled=_bool("SEPARATE_ENABLED", True),
-        separate_embeddings=_str("SEPARATE_EMBEDDINGS", "speechbrain_ecapa"),
+        separate_embeddings=_str("SEPARATE_EMBEDDINGS", "wespeaker"),
         separate_config=_str("SEPARATE_CONFIG", "") or None,
         separate_device=_str("SEPARATE_DEVICE", "") or _str("ASR_DEVICE", "cuda"),
         batch_concurrent_jobs=max(1, min(_int("BATCH_CONCURRENT_JOBS", 1), 4)),
