@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-intel"
-version = "2.1.0"
+version = "2.2.0"
 description = "Audio intelligence: Whisper transcription, CTC alignment, diarization, and sound-event detection"
 readme = "README.md"
 requires-python = ">=3.10"

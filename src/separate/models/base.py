@@ -107,14 +107,20 @@ class SourceSeparator(ModelHandle):
 
 
 def resolve_device(requested: str) -> str:
+    """``auto`` -> the GPU when there is one; a bare ``cuda`` -> ``cuda:0``.
+
+    SpeechBrain splits the device string on ``:`` to pick the card and, given
+    plain ``cuda``, logs a warning and falls back to device 0 by itself, which
+    is wrong on a multi-GPU host and noisy on every other one.
+    """
     if requested == "auto":
         try:
             import torch
 
-            return "cuda" if torch.cuda.is_available() else "cpu"
+            requested = "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
             return "cpu"
-    return requested
+    return "cuda:0" if requested == "cuda" else requested
 
 
 def torch_dtype(name: str) -> Any:

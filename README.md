@@ -72,7 +72,7 @@ docker run -d --name audio-intel --gpus all --restart unless-stopped \
   -v audio-intel-models:/var/lib/whisper \
   -v audio-intel-panns:/root/panns_data \
   -e HF_HOME=/var/lib/whisper \
-  ghcr.io/thesydoruk/audio-intel:2.1.0
+  ghcr.io/thesydoruk/audio-intel:2.2.0
 ```
 
 The two named volumes keep downloaded models across restarts and upgrades. On the first start
@@ -83,7 +83,7 @@ curl http://localhost:8080/health
 ```
 
 ```json
-{"status": "ok", "version": "2.1.0", "model": "large-v3", "diarization_enabled": false,
+{"status": "ok", "version": "2.2.0", "model": "large-v3", "diarization_enabled": false,
  "speaker_embedding_model": null, "alignment_enabled": false}
 ```
 
@@ -208,7 +208,7 @@ delete the downloaded models:
 
 ```bash
 docker rm -f audio-intel
-docker rmi ghcr.io/thesydoruk/audio-intel:2.1.0
+docker rmi ghcr.io/thesydoruk/audio-intel:2.2.0
 docker volume rm audio-intel-models audio-intel-panns     # models (optional)
 ```
 
