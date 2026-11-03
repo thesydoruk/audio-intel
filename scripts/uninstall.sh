@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Undo scripts/setup.sh: remove the virtual environment, the pre-commit hook, and
-# build/test caches. Downloaded models (data/whisper, data/panns) and .env are kept
-# unless --purge is given. Docker resources are not touched — see the README.
+# build/test caches. Downloaded models (data/whisper, data/panns), separation jobs
+# (data/jobs) and .env are kept unless --purge is given. Docker resources are not
+# touched — see the README.
 #
 # Usage: ./scripts/uninstall.sh [--purge]
 set -euo pipefail
@@ -26,9 +27,9 @@ echo "Removed .venv, the pre-commit hook, and caches."
 
 if [[ $purge -eq 1 ]]; then
   # Keep the .gitkeep placeholders the repository tracks.
-  find data/whisper data/panns -mindepth 1 ! -name .gitkeep -exec rm -rf {} + 2>/dev/null || true
+  find data/whisper data/panns data/jobs -mindepth 1 ! -name .gitkeep -exec rm -rf {} + 2>/dev/null || true
   rm -f .env
-  echo "Purged downloaded models (data/whisper, data/panns) and .env."
+  echo "Purged downloaded models (data/whisper, data/panns), jobs (data/jobs) and .env."
 else
-  echo "Kept data/whisper, data/panns and .env (use --purge to delete them)."
+  echo "Kept data/whisper, data/panns, data/jobs and .env (use --purge to delete them)."
 fi

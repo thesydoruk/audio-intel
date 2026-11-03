@@ -13,10 +13,13 @@ services:
     volumes:
       - ${MODEL_CACHE_HOST_DIR:-./data/whisper}:/var/lib/whisper
       - ${PANNS_CACHE_HOST_DIR:-./data/panns}:/root/panns_data
+      - ${JOBS_HOST_DIR:-./data/jobs}:/var/lib/jobs
     environment:
       AUDIO_INTEL_PORT: ${AUDIO_INTEL_PORT:-8080}
       MODEL_CACHE_DIR: /var/lib/whisper
       HF_HOME: /var/lib/whisper
+      TORCH_HOME: /var/lib/whisper/torch
+      JOBS_DIR: /var/lib/jobs
       HF_HUB_DISABLE_XET: "1"
       ASR_DEVICE: cuda
       ASR_COMPUTE_TYPE: float16

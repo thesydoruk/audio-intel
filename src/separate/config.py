@@ -27,12 +27,25 @@ def _deep_update(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
     return out
 
 
+def _read_yaml(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a mapping at the top level")
+    return data
+
+
 def load_config(
     path: str | Path | None = None, overrides: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    cfg_path = Path(path) if path else _find_default_config()
-    with cfg_path.open("r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+    """The packaged defaults, with ``path`` (a partial YAML) and then ``overrides`` on top.
+
+    A user file only needs the keys it changes; everything else keeps the value
+    from ``default.yaml``. A full copy of ``default.yaml`` works the same way.
+    """
+    cfg = _read_yaml(_find_default_config())
+    if path:
+        cfg = _deep_update(cfg, _read_yaml(Path(path)))
     if overrides:
         cfg = _deep_update(cfg, overrides)
     return cfg

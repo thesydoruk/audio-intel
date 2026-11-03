@@ -9,7 +9,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     VIRTUAL_ENV=/opt/venv \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    # Every download lands under the models mount: faster-whisper and pyannote
+    # through MODEL_CACHE_DIR / HF_HOME, Demucs through torch.hub (TORCH_HOME).
+    MODEL_CACHE_DIR=/var/lib/whisper \
+    HF_HOME=/var/lib/whisper \
+    TORCH_HOME=/var/lib/whisper/torch \
+    # Separation jobs (inputs, tracks, results) get a mount of their own.
+    JOBS_DIR=/var/lib/jobs
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv curl wget ca-certificates ffmpeg \

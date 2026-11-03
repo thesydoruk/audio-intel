@@ -70,7 +70,7 @@ src/jobs/
   service.py        what the HTTP layer calls: submit, get, files, cancel/delete, purge
 ```
 
-`SeparationEngine.build_config` overrides `default.yaml` (or `SEPARATE_CONFIG`) for the service:
+`SeparationEngine.build_config` overrides `default.yaml` (plus `SEPARATE_CONFIG`) for the service:
 the embedding backend, `cache.dir = JOBS_DIR/cache`, the device, no HTML report, resume on, and
 `device.unload_idle_models: false` (the model group handles unloading).
 

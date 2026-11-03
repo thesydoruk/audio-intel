@@ -57,7 +57,7 @@ Every stage implements an interface in `audio_intel.separate.models.base`:
 - `SpeechEnhancer`, `SpeechSuperResolution`
 
 Register the new class in `audio_intel.separate.models.registry` and select it from `src/separate/default.yaml`
-(or a copy passed with `--config` / `SEPARATE_CONFIG`) or the CLI.
+(or a partial YAML passed with `--config` / `SEPARATE_CONFIG`) or the CLI.
 
 ## Licenses
 
