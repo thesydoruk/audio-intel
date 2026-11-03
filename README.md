@@ -82,11 +82,14 @@ docker run -d --name audio-intel --gpus all --restart unless-stopped \
   -p 8080:8080 \
   -v audio-intel-models:/var/lib/whisper \
   -v audio-intel-panns:/root/panns_data \
-  -e HF_HOME=/var/lib/whisper \
+  -v audio-intel-jobs:/var/lib/jobs \
+  -e HF_HOME=/var/lib/whisper -e TORCH_HOME=/var/lib/whisper/torch \
+  -e JOBS_DIR=/var/lib/jobs \
   ghcr.io/thesydoruk/audio-intel:2.2.0
 ```
 
-The two named volumes keep downloaded models across restarts and upgrades. On the first start
+The named volumes keep downloaded models (Whisper, pyannote, PANNs, Demucs) and separation
+jobs across restarts and upgrades. On the first start
 the container downloads Whisper before it answers, so give it a few minutes, then check:
 
 ```bash
@@ -108,12 +111,6 @@ Diarization is off by default because its models are gated on Hugging Face — s
 [Enable speaker diarization](#enable-speaker-diarization). Any setting from
 [`.env.example`](.env.example) can be passed with `-e NAME=value`.
 
-Separation jobs write to `JOBS_DIR`, `/app/data/jobs` inside the image, which the command
-above does not mount, so jobs and their results are lost when the container is recreated.
-Add `-v audio-intel-jobs:/app/data/jobs` to keep them. Demucs stores its weights in the torch
-hub cache (`/root/.cache/torch`); add `-e TORCH_HOME=/var/lib/whisper/torch` to keep them in
-the models volume.
-
 ### Docker Compose
 
 ```bash
@@ -125,10 +122,9 @@ docker compose logs -f        # watch the first-start model download
 curl http://localhost:8080/health
 ```
 
-Models are cached in `./data/whisper` and `./data/panns` (override with
-`MODEL_CACHE_HOST_DIR` / `PANNS_CACHE_HOST_DIR`). Pin another release with
-`AUDIO_INTEL_VERSION=x.y.z` in `.env`. As with `docker run`, `JOBS_DIR` and the Demucs cache
-are not mounted by `docker-compose.yml` (see the note above).
+Models are cached in `./data/whisper` and `./data/panns`, separation jobs in `./data/jobs`
+(override with `MODEL_CACHE_HOST_DIR` / `PANNS_CACHE_HOST_DIR` / `JOBS_HOST_DIR`). Pin another
+release with `AUDIO_INTEL_VERSION=x.y.z` in `.env`.
 
 To build the image from your checkout instead of pulling it (about 10 minutes):
 
@@ -232,15 +228,14 @@ delete the downloaded models:
 ```bash
 docker rm -f audio-intel
 docker rmi ghcr.io/thesydoruk/audio-intel:2.2.0
-docker volume rm audio-intel-models audio-intel-panns     # models (optional)
-docker volume rm audio-intel-jobs                         # if you mounted one for jobs
+docker volume rm audio-intel-models audio-intel-panns audio-intel-jobs   # models and jobs (optional)
 ```
 
 **Docker Compose** — from the clone:
 
 ```bash
-docker compose down --rmi all          # container, network and image
-rm -rf data/whisper/* data/panns/*     # models (optional)
+docker compose down --rmi all                       # container, network and image
+rm -rf data/whisper/* data/panns/* data/jobs/*      # models and jobs (optional)
 ```
 
 If you built locally, add `-f docker-compose.build.yml` to the `down` command so the
@@ -325,13 +320,13 @@ Variable groups:
 | `SEPARATE_*`                                                                 | Separation jobs: on/off, embeddings, YAML config, device |
 | `BATCH_*`, `JOBS_*`                                                          | Batch lane size and queue, job storage and retention     |
 
-`SEPARATE_CONFIG` points at a YAML that jobs use instead of
-[`src/separate/default.yaml`](src/separate/default.yaml) (whole file, not merged: start from a
-copy); `SEPARATE_DEVICE` defaults to `ASR_DEVICE`. The standalone `audio-intel separate` CLI
-does not read these variables (only `HF_TOKEN` from the environment); it takes flags and
-`--config` instead.
+`SEPARATE_CONFIG` points at a YAML with the settings of
+[`src/separate/default.yaml`](src/separate/default.yaml) jobs should change (only the keys it
+lists; the rest keep their defaults); `SEPARATE_DEVICE` defaults to `ASR_DEVICE`. The
+standalone `audio-intel separate` CLI does not read these variables (only `HF_TOKEN` from the
+environment); it takes flags and `--config` instead.
 
-`MODEL_CACHE_HOST_DIR`, `PANNS_CACHE_HOST_DIR`, `AUDIO_INTEL_VERSION` and
+`MODEL_CACHE_HOST_DIR`, `PANNS_CACHE_HOST_DIR`, `JOBS_HOST_DIR`, `AUDIO_INTEL_VERSION` and
 `CUDA_VISIBLE_DEVICES` are read only by Docker Compose, not by the Python app.
 
 ## HTTP API

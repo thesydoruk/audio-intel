@@ -20,6 +20,8 @@ data/whisper/*
 !data/whisper/.gitkeep
 data/panns/*
 !data/panns/.gitkeep
+data/jobs/*
+!data/jobs/.gitkeep
 .env
 .env.*
 !.env.example

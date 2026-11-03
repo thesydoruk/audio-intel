@@ -24,14 +24,14 @@ Write-Host "Removed .venv, the pre-commit hook, and caches."
 
 if ($Purge) {
     # Keep the .gitkeep placeholders the repository tracks.
-    foreach ($dir in "data\whisper", "data\panns") {
+    foreach ($dir in "data\whisper", "data\panns", "data\jobs") {
         if (Test-Path $dir) {
             Get-ChildItem -Path $dir -Force | Where-Object { $_.Name -ne ".gitkeep" } |
                 Remove-Item -Recurse -Force
         }
     }
     if (Test-Path ".env") { Remove-Item -Force ".env" }
-    Write-Host "Purged downloaded models (data\whisper, data\panns) and .env."
+    Write-Host "Purged downloaded models (data\whisper, data\panns), jobs (data\jobs) and .env."
 } else {
-    Write-Host "Kept data\whisper, data\panns and .env (use -Purge to delete them)."
+    Write-Host "Kept data\whisper, data\panns, data\jobs and .env (use -Purge to delete them)."
 }
