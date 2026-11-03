@@ -7,8 +7,10 @@ who speaks when on the same timeline. Every file has exactly the length of the m
 tracks drop into a DAW or a dubbing pipeline as they are: run ASR per speaker track, replace it
 with the dub, keep the background bed.
 
-It is not a transcription tool; it only does the physical separation. The transcription
-service is the other half of this package.
+The CLI does not transcribe; it only does the physical separation. To get the tracks and a
+transcript of every speaker track in one go, send the file to the service with `separate=true`
+instead: it runs this same pipeline as a background job, then Whisper on each track (see
+[the README](../../README.md#post-v1audiotranscriptions-with-separatetrue)).
 
 ## Quick start
 
@@ -21,8 +23,18 @@ audio-intel separate recording.mp4 -o ./output
 Result: `output/speaker_00_48k.wav …`, `output/background_48k.wav`, `output/diarization.rttm`,
 `output/metadata.json`, `output/report.html`. All WAVs have identical length.
 
-The Docker image ships the separation stack; inside the container the same command works
-(`docker run --rm --gpus all -v $PWD:/work --entrypoint audio-intel audio-intel separate /work/in.mp4 -o /work/out`).
+The Docker image ships the separation stack, so the same command works in a container:
+
+```bash
+docker run --rm --gpus all -e HF_TOKEN=hf_xxx -v "$PWD:/work" \
+  -v audio-intel-models:/var/lib/whisper -e HF_HOME=/var/lib/whisper \
+  -e TORCH_HOME=/var/lib/whisper/torch \
+  --entrypoint audio-intel ghcr.io/thesydoruk/audio-intel:2.2.0 \
+  separate /work/in.mp4 -o /work/out --cache-dir /work/cache
+```
+
+The models volume and `TORCH_HOME` keep the pyannote, SpeechBrain and Demucs downloads
+between runs.
 
 ## How it works
 
@@ -68,23 +80,28 @@ python -m audio_intel.separate input.wav -o ./output      # the same entry point
 
 ### Flags
 
-| Flag | Meaning |
-| --- | --- |
-| `--num-speakers N` / `--min-speakers` / `--max-speakers` | Constrain the diarizer when you know the cast |
-| `--channels keep\|mono\|stereo` | Layout of the master and therefore of `background_48k.wav` (default keep, max 2) |
-| `--separator demucs\|residual\|none` | How the background is produced (see below) |
-| `--separation-model htdemucs_ft\|htdemucs\|mdx_extra` | Demucs variant; `htdemucs_ft` is best and 4x slower than `htdemucs` |
-| `--diarization-mode full\|chunked` | `full` = one global pyannote pass (default) |
-| `--tse-model sepformer\|adaptive_wiener\|wesep\|stub` | Overlap handling |
-| `--no-tse` | Do not separate overlaps; both speakers get the mixed speech there |
-| `--enhance` | Enable ClearerVoice enhancement (needs `pip install -e ".[clearvoice]"`) |
-| `--device cuda\|cpu\|auto` | Compute device (default auto) |
-| `--cache-dir DIR` / `--force` | Stage cache location / ignore the cache |
-| `--stop-after separation\|diarization\|overlap` | Debug: stop early, still write RTTM/metadata |
-| `--no-background` / `--no-report` | Skip those outputs |
-| `--stub-models` | Offline stub backends (no downloads), for smoke tests |
-| `--config my.yaml` | Override any setting of `src/separate/default.yaml` |
-| `-v` / `--debug` | Verbose logs / tracebacks |
+| Flag                                                     | Meaning                                                                                        |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `-o` / `--output DIR`                                    | Output directory (default `./output`)                                                          |
+| `--num-speakers N` / `--min-speakers` / `--max-speakers` | Constrain the diarizer when you know the cast                                                  |
+| `--channels keep\|mono\|stereo`                          | Layout of the master and therefore of `background_48k.wav` (default keep, max 2)               |
+| `--sample-rate HZ`                                       | Master sample rate (default 48000)                                                             |
+| `--separator demucs\|residual\|none`                     | How the background is produced (see below)                                                     |
+| `--separation-model htdemucs_ft\|htdemucs\|mdx_extra`    | Demucs variant; `htdemucs_ft` is best and 4x slower than `htdemucs`                            |
+| `--diarization-mode full\|chunked`                       | `full` = one global pyannote pass (default)                                                    |
+| `--chunk-duration S` / `--chunk-overlap S`               | Chunk length / overlap in `chunked` mode (default 45 / 10 s)                                   |
+| `--tse-model sepformer\|adaptive_wiener\|wesep\|stub`    | Overlap handling                                                                               |
+| `--no-tse`                                               | Do not separate overlaps; both speakers get the mixed speech there                             |
+| `--enhance`                                              | Enable ClearerVoice enhancement (needs `pip install -e ".[clearvoice]"`)                       |
+| `--enhancer NAME` / `--sr-model NAME`                    | Enhancement backend / 16 → 48 kHz backend for overlap audio                                    |
+| `--device cuda\|cpu\|auto`                               | Compute device (default auto)                                                                  |
+| `--dtype float16\|bfloat16\|float32`                     | Reserved; models run in their native dtype                                                     |
+| `--cache-dir DIR` / `--force`                            | Stage cache location / ignore the cache (`--resume`, reuse it, is the default)                 |
+| `--stop-after separation\|diarization\|overlap`          | Debug: stop early, still write RTTM/metadata (`--only-diarize` = `--stop-after diarization`)   |
+| `--no-background` / `--no-report`                        | Skip those outputs                                                                             |
+| `--stub-models`                                          | Offline stub backends (no downloads), for smoke tests                                          |
+| `--config my.yaml`                                       | Use this file **instead of** `src/separate/default.yaml` (it is not merged: start from a copy) |
+| `-v` / `--debug`                                         | Verbose logs / tracebacks                                                                      |
 
 ### Background modes
 
@@ -110,10 +127,19 @@ leaves the overlap as-is on both tracks (often preferable for dubbing when overl
 ### Speaker embeddings
 
 `embeddings.backend` in the config picks the voice model behind speaker profiles and overlap
-source matching: `speechbrain_ecapa` (192-d; the default, and what the thresholds in
-`default.yaml` were tuned for) or `wespeaker` (pyannote community-1, 256-d: the space the
-transcription service's speaker roster uses, so a track's profile compares directly with the
-voices the service has stored). See [MODEL_SELECTION.md](MODEL_SELECTION.md).
+source matching: `speechbrain_ecapa` (192-d; what the thresholds in `default.yaml` were tuned
+for) or `wespeaker` (pyannote community-1, 256-d: the space the transcription service's speaker
+roster uses, so a track's profile compares directly with the voices the service has stored).
+
+The defaults differ by entry point:
+
+- **CLI**: `speechbrain_ecapa`, from `default.yaml`. To switch, pass `--config` with a copy of
+  `default.yaml` whose `embeddings.backend` is `wespeaker`.
+- **Service** (`separate=true`): `wespeaker`, set by `SEPARATE_EMBEDDINGS`. The service already
+  holds that model for its roster and lends it to the pipeline, so a job loads nothing extra.
+
+On six 2–3 speaker interviews both backends gave the same diarization, overlap decisions and
+tracks; see [MODEL_SELECTION.md](MODEL_SELECTION.md).
 
 ## Outputs
 
@@ -126,8 +152,11 @@ output/
   speaker_01_48k.wav
   diarization.rttm        SPEAKER <file> 1 <start> <dur> <NA> <NA> speaker_00 <NA> <NA>
   metadata.json           see below
-  report.html             per-speaker / overlap timelines
+  report.html             per-speaker / overlap timelines (CLI only; jobs skip it)
 ```
+
+A service job writes the same files (except `report.html`) to `JOBS_DIR/<id>/out/` and serves
+them from `GET /v1/jobs/{id}/files/{name}`.
 
 `metadata.json` keys:
 
@@ -142,7 +171,8 @@ output/
 
 Separation stems and diarization results are cached under `cache.dir` (default `./cache`) keyed by
 the master file hash and the model settings, so re-running with different downstream options (TSE,
-padding, enhancement) skips the expensive stages. `--force` recomputes everything.
+padding, enhancement) skips the expensive stages. `--force` recomputes everything. The
+service keeps its cache in `JOBS_DIR/cache`.
 
 ## Evaluation suite
 
@@ -158,7 +188,11 @@ use stub models. Scenario J expects a real 60+ minute recording that you supply.
 
 Defaults assume one **RTX 5090** (32 GB VRAM):
 
-- all models stay loaded (`device.unload_idle_models: false`); set it to `true` on a 12–16 GB card
+- all models stay loaded (`device.unload_idle_models: false`); set it to `true` on a 12–16 GB card.
+  Inside the service this setting is ignored: the separation models are the `separation` model
+  group, unloaded by `UNLOAD_IDLE_MODELS` like the others
+- a 479 s three-speaker interview through `separate=true` (with `wespeaker`): 65 s, 12.1 GB
+  peak VRAM
 - Demucs `htdemucs_ft` on a 1 h stereo file: about 1–2 min; pyannote community-1: about 1–2 min;
   SepFormer only runs on overlap regions
 - RAM: the 16 kHz speech stem is held in memory (about 230 MB per hour); the master is streamed

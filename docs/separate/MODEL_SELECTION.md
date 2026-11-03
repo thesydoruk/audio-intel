@@ -5,15 +5,26 @@ get replaced, the background is kept). That goal drives every choice below.
 
 ## Decision summary
 
-| Stage | Default | Why | Alternatives |
-| --- | --- | --- | --- |
-| Speech / background separation | **Demucs `htdemucs_ft`** (`demucs` package) | The standard, pip-installable model that actually separates dialogue from music and effects; stereo-aware; `vocals` stem feeds every later stage | `htdemucs` (4x faster, slightly worse), `mdx_extra`; BS-RoFormer / MDX23C via `audio-separator` (better vocals SDR, heavier install) |
-| Diarization | **pyannote `speaker-diarization-community-1`**, whole file | Best open diarization; overlap-aware segmentation; global clustering gives stable labels across hours. Run on the vocals stem so music does not confuse it | pyannote 3.1 (older), NeMo Sortformer, pyannoteAI precision-2 (paid) |
-| Speaker embeddings | **SpeechBrain ECAPA-TDNN** | Cheap, 192-D, good verification EER; used for enrollment/profile and to pick the right SepFormer source. The thresholds in `default.yaml` were tuned for it | `wespeaker`: pyannote community-1's 256-D model, the space the transcription service's speaker roster uses; WeSpeaker ResNet293 |
-| Overlap detection | **co-activity of diarization** | community-1 already labels overlapping speech; a second model rarely adds anything | `pyannote/overlapped-speech-detection`, `hybrid` |
-| Overlap extraction (TSE) | **SepFormer `sepformer-whamr16k` + embedding matching** | Blind 2-source separation is the right tool for a *local* overlap region; matching each source to the speaker profile removes the permutation problem | `adaptive_wiener` (no model), WeSep BSRNN (needs checkpoint), SoloSpeech / MeanFlow-TSE (research, NC licenses) |
-| Enhancement | **off** (optional ClearerVoice MossFormer2_SE_48K / FRCRN_SE_16K) | Demucs already removes the bed; enhancement colours timbre, which voice cloning / dubbing QA dislikes. Enable for noisy field recordings | resemble-enhance, DeepFilterNet |
-| 16 → 48 kHz for TSE output | **soxr** (optional ClearerVoice MossFormer2_SR_48K) | Honest upsampling; neural SR invents highs which may or may not be wanted | AudioSR |
+| Stage                          | Default                                                                                 | Why                                                                                                                                                                                                                                                                                                   | Alternatives                                                                                                                         |
+| ------------------------------ | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Speech / background separation | **Demucs `htdemucs_ft`** (`demucs` package)                                             | The standard, pip-installable model that actually separates dialogue from music and effects; stereo-aware; `vocals` stem feeds every later stage                                                                                                                                                      | `htdemucs` (4x faster, slightly worse), `mdx_extra`; BS-RoFormer / MDX23C via `audio-separator` (better vocals SDR, heavier install) |
+| Diarization                    | **pyannote `speaker-diarization-community-1`**, whole file                              | Best open diarization; overlap-aware segmentation; global clustering gives stable labels across hours. Run on the vocals stem so music does not confuse it                                                                                                                                            | pyannote 3.1 (older), NeMo Sortformer, pyannoteAI precision-2 (paid)                                                                 |
+| Speaker embeddings             | **CLI: SpeechBrain ECAPA-TDNN**; **service: `wespeaker`** (pyannote community-1, 256-D) | ECAPA is cheap, 192-D, good verification EER; used for enrollment/profile and to pick the right SepFormer source, and the thresholds in `default.yaml` were tuned for it. The service uses `wespeaker` because it already holds that model for its roster, so a job loads no second model (see below) | WeSpeaker ResNet293                                                                                                                  |
+| Overlap detection              | **co-activity of diarization**                                                          | community-1 already labels overlapping speech; a second model rarely adds anything                                                                                                                                                                                                                    | `pyannote/overlapped-speech-detection`, `hybrid`                                                                                     |
+| Overlap extraction (TSE)       | **SepFormer `sepformer-whamr16k` + embedding matching**                                 | Blind 2-source separation is the right tool for a *local* overlap region; matching each source to the speaker profile removes the permutation problem                                                                                                                                                 | `adaptive_wiener` (no model), WeSep BSRNN (needs checkpoint), SoloSpeech / MeanFlow-TSE (research, NC licenses)                      |
+| Enhancement                    | **off** (optional ClearerVoice MossFormer2_SE_48K / FRCRN_SE_16K)                       | Demucs already removes the bed; enhancement colours timbre, which voice cloning / dubbing QA dislikes. Enable for noisy field recordings                                                                                                                                                              | resemble-enhance, DeepFilterNet                                                                                                      |
+| 16 → 48 kHz for TSE output     | **soxr** (optional ClearerVoice MossFormer2_SR_48K)                                     | Honest upsampling; neural SR invents highs which may or may not be wanted                                                                                                                                                                                                                             | AudioSR                                                                                                                              |
+
+### Embeddings: ECAPA vs. wespeaker
+
+Measured with `scripts/eval_separate_embeddings.py` on six 2–3 speaker interviews (8–10 min each,
+RTX 5090): both backends give the same diarization (full mode does not depend on the embedder),
+the same overlap decisions, and speaker tracks with ≥ 99.3 % sample agreement; leakage into other
+speakers' turns differs by at most 0.02. The embedder only matters in overlap regions long enough
+for target-speaker extraction, and those interviews had none. So the service defaults to
+`SEPARATE_EMBEDDINGS=wespeaker` and shares the model it already holds, while the CLI keeps
+`speechbrain_ecapa`, whose profile thresholds were tuned for it. Rerun the script on recordings
+with long overlaps before changing either default.
 
 ## Explicit non-choices
 
@@ -24,6 +35,7 @@ get replaced, the background is kept). That goal drives every choice below.
   recordings too long for one pass.
 - **Audio-visual TSE**: needs video of the speaker's face.
 - **ASR inside this pipeline**: out of scope; outputs are designed to be fed to Whisper-class models.
+  The service's separation job does exactly that after the pipeline, with its own Whisper.
 
 ## Hardware: RTX 5090
 
@@ -31,7 +43,8 @@ get replaced, the background is kept). That goal drives every choice below.
   `pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128`.
   Plain PyPI wheels on Windows are CPU-only.
 - 32 GB VRAM holds Demucs (~2 GB while running), pyannote (~1 GB), ECAPA + SepFormer (~1 GB) at once;
-  `device.unload_idle_models: false` is the default. Turn it on for 12–16 GB cards.
+  `device.unload_idle_models: false` is the default. Turn it on for 12–16 GB cards. In the
+  service, `UNLOAD_IDLE_MODELS` governs the `separation` model group instead.
 - All models run in float32; the `device.dtype` setting is reserved.
 
 ## Replacing a backend
@@ -44,15 +57,15 @@ Every stage implements an interface in `audio_intel.separate.models.base`:
 - `SpeechEnhancer`, `SpeechSuperResolution`
 
 Register the new class in `audio_intel.separate.models.registry` and select it from `src/separate/default.yaml`
-or the CLI.
+(or a copy passed with `--config` / `SEPARATE_CONFIG`) or the CLI.
 
 ## Licenses
 
-| Component | Posture |
-| --- | --- |
-| Demucs | MIT (weights trained on MUSDB-HQ + internal data; check the model card for commercial use) |
-| pyannote community-1 | Open weights, gated on Hugging Face; read the model card terms |
-| SpeechBrain ECAPA / SepFormer | Apache-2.0 toolkit; check each model card |
-| ClearerVoice | Apache-2.0 code; check ModelScope / HF model cards |
+| Component                     | Posture                                                                                    |
+| ----------------------------- | ------------------------------------------------------------------------------------------ |
+| Demucs                        | MIT (weights trained on MUSDB-HQ + internal data; check the model card for commercial use) |
+| pyannote community-1          | Open weights, gated on Hugging Face; read the model card terms                             |
+| SpeechBrain ECAPA / SepFormer | Apache-2.0 toolkit; check each model card                                                  |
+| ClearerVoice                  | Apache-2.0 code; check ModelScope / HF model cards                                         |
 
 Verify upstream licenses before redistributing outputs commercially.

@@ -19,9 +19,18 @@ speaker diarization, speaker voice vectors, sound events and word-level alignmen
 
 Input: anything ffmpeg can decode (wav, mp3, m4a, ogg, mp4, mov, …). One file per request.
 
-The same package also does **speaker separation**: `audio-intel separate` turns one recording
-into a clean 48 kHz track per speaker plus a background track (music, effects), sample-aligned
-with the master, for dubbing and per-speaker ASR. See [docs/separate/USAGE.md](docs/separate/USAGE.md).
+The same package also does **speaker separation**: one recording becomes a clean 48 kHz track
+per speaker plus a background track (music, effects), sample-aligned with the master, for
+dubbing and per-speaker ASR. It runs from the command line (`audio-intel separate`, see
+[docs/separate/USAGE.md](docs/separate/USAGE.md)) or through the service as a background job
+that also transcribes every speaker track
+([`separate=true`](#post-v1audiotranscriptions-with-separatetrue)).
+
+| Stage (separation) | Technology                         | What you get                                   |
+| ------------------ | ---------------------------------- | ---------------------------------------------- |
+| Speech / bed       | Demucs `htdemucs_ft`               | Vocals stem + background (music, effects)      |
+| Speakers           | pyannote community-1 on the vocals | Global speaker turns and overlap regions       |
+| Overlaps           | SpeechBrain SepFormer              | Each overlapped speaker extracted to its track |
 
 ## Contents
 
@@ -52,7 +61,9 @@ The Docker image and the `cu128` torch index below cover every card from Ampere 
 
 **Disk.** The Docker image is about 6 GB to download (13 GB unpacked). Models are downloaded
 on first use into a cache that survives restarts: Whisper `large-v3` about 3 GB, pyannote and
-PANNs a few hundred MB.
+PANNs a few hundred MB, the separation models (Demucs, SepFormer) a few hundred MB more on the
+first separation job. Each job keeps its input, tracks (24-bit 48 kHz WAVs, so a few hundred MB
+per hour of audio) and stage cache in `JOBS_DIR` until `JOBS_RESULT_TTL_H` expires.
 
 ## Install
 
@@ -97,6 +108,12 @@ Diarization is off by default because its models are gated on Hugging Face — s
 [Enable speaker diarization](#enable-speaker-diarization). Any setting from
 [`.env.example`](.env.example) can be passed with `-e NAME=value`.
 
+Separation jobs write to `JOBS_DIR`, `/app/data/jobs` inside the image, which the command
+above does not mount, so jobs and their results are lost when the container is recreated.
+Add `-v audio-intel-jobs:/app/data/jobs` to keep them. Demucs stores its weights in the torch
+hub cache (`/root/.cache/torch`); add `-e TORCH_HOME=/var/lib/whisper/torch` to keep them in
+the models volume.
+
 ### Docker Compose
 
 ```bash
@@ -110,7 +127,8 @@ curl http://localhost:8080/health
 
 Models are cached in `./data/whisper` and `./data/panns` (override with
 `MODEL_CACHE_HOST_DIR` / `PANNS_CACHE_HOST_DIR`). Pin another release with
-`AUDIO_INTEL_VERSION=x.y.z` in `.env`.
+`AUDIO_INTEL_VERSION=x.y.z` in `.env`. As with `docker run`, `JOBS_DIR` and the Demucs cache
+are not mounted by `docker-compose.yml` (see the note above).
 
 To build the image from your checkout instead of pulling it (about 10 minutes):
 
@@ -201,6 +219,11 @@ takes a few extra seconds. If the token cannot fetch them, the request still ret
 transcript, only without `speaker_id`, and the log says why. Every later `diarize=true`
 request retries the load, so once the terms are accepted no restart is needed.
 
+Separation jobs (`separate=true`) need `HF_TOKEN` too, since they diarize with the same gated
+model. With `SPEAKERS_ENABLED=1` a job borrows the service's loaded pyannote pipeline and
+embedding model, and the job's `speakers` roster gets embeddings. With `SPEAKERS_ENABLED=0` the
+job loads its own pyannote copies, and the roster has no `embedding`.
+
 ## Uninstall
 
 **Docker (one command)** — remove the container and image; add the volume line to also
@@ -210,6 +233,7 @@ delete the downloaded models:
 docker rm -f audio-intel
 docker rmi ghcr.io/thesydoruk/audio-intel:2.2.0
 docker volume rm audio-intel-models audio-intel-panns     # models (optional)
+docker volume rm audio-intel-jobs                         # if you mounted one for jobs
 ```
 
 **Docker Compose** — from the clone:
@@ -260,22 +284,24 @@ Settings come from environment variables or a `.env` file; **real environment va
 over `.env`. Every variable is documented with its values and effect in
 [`.env.example`](.env.example). The ones you are most likely to change:
 
-| Variable                  | Default    | What it changes                                                         |
-| ------------------------- | ---------- | ----------------------------------------------------------------------- |
-| `ASR_MODEL`               | `large-v3` | Whisper size: `large-v3-turbo` is much faster at slightly lower quality |
-| `ASR_LANGUAGE`            | `auto`     | Force one language (`uk`, `en`, …) instead of detecting per chunk       |
-| `ASR_HALLUCINATION_FILTER` | `1`      | Drop decoded text that no VAD speech backs (music, padding); see `.env.example` |
-| `ASR_DEVICE`              | `cuda`     | `cpu` to run without a GPU (pair with `ASR_COMPUTE_TYPE=int8`)          |
-| `MAX_CONCURRENT_REQUESTS` | `2`        | Requests processed at once; the rest wait in line                       |
-| `GPU_PARALLEL`            | `2`        | Model stages allowed on the GPU at once (0 = unlimited); batch waits behind interactive |
-| `UNLOAD_IDLE_MODELS`      | `0`        | Unload diarization / embeddings / sound events / alignment after `MODEL_IDLE_TTL_S` idle |
-| `SEPARATE_ENABLED`        | `1`        | Accept separation jobs (`separate=true`); `BATCH_CONCURRENT_JOBS`, `BATCH_QUEUE_MAX`, `JOBS_DIR` |
-| `MAX_QUEUED_REQUESTS`     | `8`        | Requests allowed to wait; beyond that the server answers `503`          |
-| `ASR_PARALLEL_WORKERS`    | `1`        | Whisper copies per request: faster on long files, more VRAM             |
-| `SPEAKERS_ENABLED`        | `0`        | Load diarization (needs `HF_TOKEN`, see above)                          |
-| `SOUND_EVENTS_ENABLED`    | `1`        | Load PANNs for sound events                                             |
-| `WORD_ALIGN_ENABLED`      | `0`        | Load WhisperX CTC alignment models                                      |
-| `AUDIO_INTEL_PORT`        | `8080`     | HTTP port                                                               |
+| Variable                   | Default     | What it changes                                                                                                  |
+| -------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `ASR_MODEL`                | `large-v3`  | Whisper size: `large-v3-turbo` is much faster at slightly lower quality                                          |
+| `ASR_LANGUAGE`             | `auto`      | Force one language (`uk`, `en`, …) instead of detecting per chunk                                                |
+| `ASR_HALLUCINATION_FILTER` | `1`         | Drop decoded text that no VAD speech backs (music, padding); see `.env.example`                                  |
+| `ASR_DEVICE`               | `cuda`      | `cpu` to run without a GPU (pair with `ASR_COMPUTE_TYPE=int8`)                                                   |
+| `MAX_CONCURRENT_REQUESTS`  | `2`         | Requests processed at once; the rest wait in line                                                                |
+| `GPU_PARALLEL`             | `2`         | Model stages allowed on the GPU at once (0 = unlimited); batch waits behind interactive                          |
+| `UNLOAD_IDLE_MODELS`       | `0`         | Unload diarization / embeddings / sound events / alignment / separation after `MODEL_IDLE_TTL_S` idle            |
+| `SEPARATE_ENABLED`         | `1`         | Accept separation jobs (`separate=true`); `BATCH_CONCURRENT_JOBS`, `BATCH_QUEUE_MAX`, `JOBS_DIR`                 |
+| `SEPARATE_EMBEDDINGS`      | `wespeaker` | Voice model of the separation pipeline: `wespeaker` reuses the service's, `speechbrain_ecapa` loads a second one |
+| `JOBS_RESULT_TTL_H`        | `24`        | Hours a finished job's tracks and result are kept                                                                |
+| `MAX_QUEUED_REQUESTS`      | `8`         | Requests allowed to wait; beyond that the server answers `503`                                                   |
+| `ASR_PARALLEL_WORKERS`     | `1`         | Whisper copies per request: faster on long files, more VRAM                                                      |
+| `SPEAKERS_ENABLED`         | `0`         | Load diarization (needs `HF_TOKEN`, see above)                                                                   |
+| `SOUND_EVENTS_ENABLED`     | `1`         | Load PANNs for sound events                                                                                      |
+| `WORD_ALIGN_ENABLED`       | `0`         | Load WhisperX CTC alignment models                                                                               |
+| `AUDIO_INTEL_PORT`         | `8080`      | HTTP port                                                                                                        |
 
 Model copies multiply: `MAX_CONCURRENT_REQUESTS × ASR_PARALLEL_WORKERS` Whisper copies stay
 loaded, and the same product applies to `SPEAKERS_PARALLEL_WORKERS` / `SPEAKERS_EMBED_WORKERS`.
@@ -283,18 +309,27 @@ Lower them first if you run out of VRAM.
 
 Variable groups:
 
-| Prefix            | Purpose                                 |
-| ----------------- | --------------------------------------- |
-| `AUDIO_INTEL_*`   | HTTP port                               |
-| `LOG_LEVEL`       | Log level                               |
-| `MAX_*_REQUESTS`  | Parallel HTTP requests and queue length |
-| `ASR_*`           | Model, device, decode, parallel workers |
-| `MODEL_CACHE_DIR` | Model cache (HF + faster-whisper)       |
-| `HF_TOKEN`        | Hugging Face token for pyannote         |
-| `VAD_*`           | Silero VAD and chunk splitting          |
-| `SOUND_EVENTS_*`  | PANNs — sound events                    |
-| `SPEAKERS_*`      | pyannote — speakers + embeddings        |
-| `WORD_ALIGN_*`    | WhisperX CTC alignment                  |
+| Prefix                                                                       | Purpose                                                  |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `AUDIO_INTEL_*`                                                              | HTTP port                                                |
+| `LOG_LEVEL`                                                                  | Log level                                                |
+| `MAX_*_REQUESTS`                                                             | Parallel HTTP requests and queue length                  |
+| `ASR_*`                                                                      | Model, device, decode, parallel workers                  |
+| `MODEL_CACHE_DIR`                                                            | Model cache (HF + faster-whisper)                        |
+| `HF_TOKEN`                                                                   | Hugging Face token for pyannote                          |
+| `VAD_*`                                                                      | Silero VAD and chunk splitting                           |
+| `SOUND_EVENTS_*`                                                             | PANNs — sound events                                     |
+| `SPEAKERS_*`                                                                 | pyannote — speakers + embeddings                         |
+| `WORD_ALIGN_*`                                                               | WhisperX CTC alignment                                   |
+| `GPU_PARALLEL`, `UNLOAD_IDLE_MODELS`, `MODEL_IDLE_TTL_S`, `TORCH_ALLOW_TF32` | GPU sharing, idle unload, TF32                           |
+| `SEPARATE_*`                                                                 | Separation jobs: on/off, embeddings, YAML config, device |
+| `BATCH_*`, `JOBS_*`                                                          | Batch lane size and queue, job storage and retention     |
+
+`SEPARATE_CONFIG` points at a YAML that jobs use instead of
+[`src/separate/default.yaml`](src/separate/default.yaml) (whole file, not merged: start from a
+copy); `SEPARATE_DEVICE` defaults to `ASR_DEVICE`. The standalone `audio-intel separate` CLI
+does not read these variables (only `HF_TOKEN` from the environment); it takes flags and
+`--config` instead.
 
 `MODEL_CACHE_HOST_DIR`, `PANNS_CACHE_HOST_DIR`, `AUDIO_INTEL_VERSION` and
 `CUDA_VISIBLE_DEVICES` are read only by Docker Compose, not by the Python app.
@@ -309,9 +344,11 @@ outside scheduler:
 
 - `requests`: `in_flight`, `queued`, `max`, `queue_max`.
 - `gpu_tokens`: `in_use`, `waiting`, `max` (`GPU_PARALLEL`).
-- `batch`: `running`, `queued`, `max`, `queue_max` of the job lane and `jobs` counts by status.
+- `batch` (when `SEPARATE_ENABLED=1`): `running`, `queued`, `max`, `queue_max` of the job lane
+  and `jobs` counts by status.
 - `models.groups`: per group (`asr`, `diarization`, `speaker_embedding`, `sound_events`,
-  `alignment`) whether it is `resident`, `in_use`, its `idle_s`, and load/unload counts;
+  `alignment`, `separation`) whether it is `resident`, `in_use`, its `idle_s`, and load/unload
+  counts;
   `models.unload_idle` and `idle_ttl_s` echo `UNLOAD_IDLE_MODELS` / `MODEL_IDLE_TTL_S`.
 - `gpu`: device name, device-wide `vram_used_mb` / `vram_total_mb` (every process on the
   card) and this process's `torch_reserved_mb`; `null` without CUDA.
@@ -393,8 +430,7 @@ One timeline in `segments`, speech and sounds sorted by time and told apart by `
 
 ### `POST /v1/audio/transcriptions` with `separate=true`
 
-The same upload becomes a **separation job**: the answer is `202` with `{"id", "status",
-"url"}` and a `Location` header, and the work runs on the batch lane (`BATCH_CONCURRENT_JOBS`
+The same upload becomes a **separation job**: the answer is `202` with `{"id", "status", "url"}` and a `Location` header, and the work runs on the batch lane (`BATCH_CONCURRENT_JOBS`
 at a time, `BATCH_QUEUE_MAX` waiting, `503` beyond that). The job separates the recording into
 one 48 kHz track per speaker plus the background bed, transcribes every speaker track on its
 own (speaker known before decoding, no diarization), embeds each speaker from its track, and
@@ -410,12 +446,28 @@ curl -X DELETE http://localhost:8080/v1/jobs/<id>            # cancel, or remove
 ```
 
 `GET /v1/jobs/{id}` returns `status` (`queued`, `running`, `done`, `failed`, `cancelled`),
-`stage`, `progress`, timestamps and, once done, `result`: the usual transcription body whose
-speech segments carry `speaker_id`, the `speakers` roster with embeddings, `overlaps`, and
-`tracks` naming the files `GET /v1/jobs/{id}/files/{name}` serves (`speakers`,
-`background`, `speech`, `master`, `rttm`, `metadata`). `GET /v1/jobs` lists recent jobs.
-Results are deleted `JOBS_RESULT_TTL_H` hours after they finish. Cancellation takes effect
-at the next stage boundary. Without `separate=true` nothing changes.
+`stage` (`separating`, `transcribing i/n`, `embedding`, `sound_events`, `finishing`),
+`progress` (0–1), `created_at` / `started_at` / `finished_at` / `expires_at`, the `input`
+file name, the `params` it was queued with, `error` for a failed job and, once done,
+`result`: the usual transcription body whose speech segments carry `speaker_id`, the
+`speakers` roster (with embeddings when `SPEAKERS_ENABLED=1`), `overlaps`, `elapsed_s`, and
+`tracks` naming the files `GET /v1/jobs/{id}/files/{name}` serves (`speakers`, `background`,
+`speech`, `master`, `rttm`, `metadata`). Files are served only once the job is `done`.
+`GET /v1/jobs?limit=50` lists recent jobs (up to 500) without results.
+
+- `diarize` and `response_format` are ignored for a job: speakers come from the separation,
+  and the result is always JSON.
+- Results are deleted `JOBS_RESULT_TTL_H` hours after they finish.
+- Jobs are not resumed after a restart: queued and running ones end as `failed` with
+  `server restarted before the job finished`. Submit them again.
+- `DELETE` on a queued job removes it at once; on a running one it takes effect at the next
+  stage boundary (the job ends as `cancelled`); on a finished one it deletes the job and its
+  files.
+- Errors: `404` from every job endpoint (and for `separate=true`) when `SEPARATE_ENABLED=0`,
+  `503` with `Retry-After` when `BATCH_QUEUE_MAX` jobs are already waiting.
+- Jobs need `HF_TOKEN` for pyannote (see [Enable speaker diarization](#enable-speaker-diarization)).
+
+Without `separate=true` nothing changes.
 
 ### `POST /v1/speakers/embed`
 
@@ -483,6 +535,26 @@ Whisper, VAD (one copy per concurrent request), and the alignment models for
 PANNs, pyannote, and alignment models for other languages load on the first request that
 needs them, which keeps startup VRAM low on shared GPUs.
 
+### Separation jobs
+
+```text
+separate=true → JOBS_DIR/<id>/ → batch lane (BATCH_CONCURRENT_JOBS)
+              → separation → Whisper per speaker track → embeddings → [sound_events] → result.json
+```
+
+1. **Separate.** The pipeline from [docs/separate/USAGE.md](docs/separate/USAGE.md) runs on the
+   upload: Demucs splits speech from the bed, pyannote diarizes the vocals stem, SepFormer
+   handles overlaps, and each speaker gets a full-length 48 kHz track. It borrows the
+   service's pyannote pipeline (and, with `SEPARATE_EMBEDDINGS=wespeaker`, its embedding
+   model), so only Demucs and SepFormer are extra; they form the `separation` model group.
+1. **Transcribe each track** with the same Whisper as interactive requests. The speaker is
+   known before decoding, and with the music gone the hallucination filter has less to do.
+1. **Embed** each speaker from their own track, in the same space as `/v1/speakers/embed`.
+1. **Sound events** (with `sound_events=true`) run PANNs on the background track.
+
+Every GPU stage of a job takes a GPU token at batch priority, so interactive requests get the
+card first at each stage boundary. A job's stage cache lives in `JOBS_DIR/cache`.
+
 ## Troubleshooting
 
 | Symptom                                                                                          | Cause and fix                                                                                                                                                                     |
@@ -495,21 +567,29 @@ needs them, which keeps startup VRAM low on shared GPUs.
 | `CUDA out of memory`                                                                             | Too many model copies: lower `ASR_PARALLEL_WORKERS`, `MAX_CONCURRENT_REQUESTS`, `SPEAKERS_*_WORKERS`, or use `ASR_MODEL=large-v3-turbo`.                                          |
 | The first `diarize` / `sound_events` request is slower than the rest                             | Expected: those models load on first use.                                                                                                                                         |
 | `bind: address already in use`                                                                   | Port 8080 is taken: map another one (`-p 9090:8080`, or `AUDIO_INTEL_PORT` in `.env`).                                                                                            |
+| `separate=true` or `/v1/jobs` answers `404` `SEPARATE_ENABLED=0: no job lane`                    | The job lane is off: set `SEPARATE_ENABLED=1` and restart.                                                                                                                        |
+| Job `failed` with `Failed to load pyannote/speaker-diarization-community-1`                      | Separation diarizes with the gated pyannote model: set `HF_TOKEN` and accept the model's conditions.                                                                              |
+| Job `failed` with `server restarted before the job finished`                                     | Jobs are not resumed after a restart; submit the file again.                                                                                                                      |
+| Job result has `speakers` without `embedding`                                                    | `SPEAKERS_ENABLED=0`: the roster embeddings come from the service's speaker model. Enable it (with `HF_TOKEN`).                                                                   |
+| The first separation job is slow to start                                                        | Demucs and SepFormer download and load on first use (the `separation` model group).                                                                                               |
 
 ## Project layout
 
 ```
 src/                         # import: audio_intel.*
 ├── audio/                   # MediaWorkspace, decode, chunking
-├── common/                  # ModelPool
+├── common/                  # ModelPool, GPU tokens, model-group residency
 ├── vad/                     # Silero VAD, VadPipeline
 ├── transcribe/              # WhisperEngine, HTTP Transcriber
 ├── align/                   # WhisperX CTCAligner
 ├── quality/                 # text normalization
 ├── diarization/             # pyannote + speaker merge/embeddings
 ├── events/                  # PANNs AED
+├── jobs/                    # job store (SQLite), batch lane, separation job
+├── separate/                # speaker separation pipeline + `audio-intel separate` CLI
 └── server/                  # FastAPI app
-scripts/                     # setup / run / uninstall, image smoke check
+docs/separate/               # separation: usage, model selection, development
+scripts/                     # setup / run / uninstall, smoke checks, eval scripts
 ```
 
 ## pip extras
@@ -518,8 +598,10 @@ scripts/                     # setup / run / uninstall, image smoke check
 pip install -e .              # core: faster-whisper, decode
 pip install -e ".[server]"    # + FastAPI, pyannote, PANNs
 pip install -e ".[vad]"       # + silero-vad
-pip install -e ".[all]"       # server + vad
-pip install -e ".[dev]"       # pytest, ruff, pre-commit
+pip install -e ".[separate]"  # + Demucs, SpeechBrain (SepFormer, ECAPA) for separation
+pip install -e ".[clearvoice]" # + ClearerVoice enhancement / super-resolution (optional)
+pip install -e ".[all]"       # server + vad + separate
+pip install -e ".[dev]"       # pytest, ruff, pre-commit, separate-core (stub backends)
 # WhisperX pins pyannote.audio < 4 but its alignment never imports it, so it is installed
 # without deps (scripts/setup.* and the Dockerfile do this for you):
 pip install --no-deps whisperx==3.7.9 && pip install nltk pandas "transformers<5"
@@ -548,7 +630,9 @@ pre-commit run --all-files
 ```
 
 Unit tests need no GPU and download no models (chunking, normalization, alignment bridge,
-AED and speaker helpers).
+AED and speaker helpers, the job store, batch lane and job API, and the separation pipeline on
+its stub backends in `tests/separate/`). The separation package has its own
+[development notes](docs/separate/DEVELOPMENT.md).
 
 `scripts/image-smoke.sh <image>` checks a built image on a CPU-only machine: decodes audio
 through torchcodec/FFmpeg, imports the native stack (torch, pyannote, WhisperX alignment,
@@ -564,6 +648,11 @@ transcribes the sample. `HF_TOKEN` in the environment enables `diarize=1`.
 labelled corpus (speech clips with reference text, non-speech audio such as Demucs
 background stems) and prints a threshold grid; its docstring has the manifest format and
 the `docker run` line. Change the filter's defaults only with its numbers.
+
+`scripts/eval_separate_embeddings.py <recording>... --out ./eval_sep` runs separation with
+both embedding backends (`speechbrain_ecapa`, `wespeaker`) and reports where the diarization,
+overlap decisions and speaker tracks differ. It is how `SEPARATE_EMBEDDINGS=wespeaker` was
+chosen; rerun it before changing that default.
 
 ## Releases
 
@@ -591,5 +680,7 @@ Third-party libraries and pretrained models keep their own licenses and terms.
 In particular, pyannote checkpoints on Hugging Face
 (`pyannote/speaker-diarization-community-1`, CC-BY-4.0) are gated:
 accept their conditions and set `HF_TOKEN` before enabling diarization.
-Whisper, Silero VAD, WhisperX align models, and PANNs / AudioSet assets are
-downloaded separately and are not redistributed in this repository.
+Whisper, Silero VAD, WhisperX align models, PANNs / AudioSet assets, and the separation
+models (Demucs, SpeechBrain SepFormer / ECAPA, optional ClearerVoice) are downloaded
+separately and are not redistributed in this repository; see
+[docs/separate/MODEL_SELECTION.md](docs/separate/MODEL_SELECTION.md#licenses).

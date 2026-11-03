@@ -36,15 +36,15 @@ tests/separate/           offline tests on the stub backends
 ## Pipeline stages (orchestrator.py)
 
 1. `materialize_master_wav` — decode once to `_master_48k.wav` (mono/stereo per `audio.master_channels`).
-2. `_separate` — Demucs → `_speech_48k.wav` + `background_48k.wav` (cached by master hash + model).
-3. `_diarize_full` (or `_diarize_chunked`) on the 16 kHz speech stem → global turns; `merge_segments`,
+1. `_separate` — Demucs → `_speech_48k.wav` + `background_48k.wav` (cached by master hash + model).
+1. `_diarize_full` (or `_diarize_chunked`) on the 16 kHz speech stem → global turns; `merge_segments`,
    `relabel_by_duration` (speaker_00 = talks most).
-4. Overlap detection on the turns.
-5. `_build_profiles` — embeddings of each speaker's cleanest turns + an enrollment clip.
-6. `_extract` — each turn is split by `split_by_overlap` into single / overlapped parts, padded by
+1. Overlap detection on the turns.
+1. `_build_profiles` — embeddings of each speaker's cleanest turns + an enrollment clip.
+1. `_extract` — each turn is split by `split_by_overlap` into single / overlapped parts, padded by
    `stitching.segment_pad_ms`, and written with `TrackStitcher` (raised-cosine crossfades; padded
    neighbours overlap so there is no dip at the seam).
-7. `_finish` — export tracks, residual background if configured, RTTM, metadata, report.
+1. `_finish` — export tracks, residual background if configured, RTTM, metadata, report.
 
 ## Sharing models with the service
 
@@ -52,19 +52,45 @@ tests/separate/           offline tests on the stub backends
 `_providers.embedding` are callables that return an already loaded pyannote `Pipeline` /
 `Inference`. The transcription service passes its own instances there, so one copy of each model
 serves both transcription and separation in one process. Without providers the backends load
-their own copies, as the CLI does.
+their own copies, as the CLI does. The service passes `diarization` when `SPEAKERS_ENABLED=1`, and
+`embedding` only when `SEPARATE_EMBEDDINGS=wespeaker` as well (the default).
+
+`_providers.gpu_guard` is a context-manager factory the orchestrator wraps around every GPU stage;
+the service passes one that takes a GPU token at batch priority, so interactive requests go first.
+The CLI has none (`nullcontext`).
+
+The service side lives in `src/jobs/`:
+
+```text
+src/jobs/
+  store.py          SQLite rows + one directory per job under JOBS_DIR; TTL janitor; orphans fail on start
+  lane.py           bounded worker pool (BATCH_CONCURRENT_JOBS, BATCH_QUEUE_MAX)
+  separate_job.py   SeparationEngine (config overrides, the `separation` model group) and the job stages:
+                    separating → transcribing → embedding → sound_events → finishing
+  service.py        what the HTTP layer calls: submit, get, files, cancel/delete, purge
+```
+
+`SeparationEngine.build_config` overrides `default.yaml` (or `SEPARATE_CONFIG`) for the service:
+the embedding backend, `cache.dir = JOBS_DIR/cache`, the device, no HTML report, resume on, and
+`device.unload_idle_models: false` (the model group handles unloading).
 
 ## Tests
 
 ```bash
 python -m pytest tests/separate      # offline, stub backends; no torch needed
+python -m pytest tests/test_separate_job.py tests/test_job_store.py tests/test_batch_lane.py tests/test_jobs_api.py
 ruff check src tests scripts
 ```
 
-Tests cover chunking, tracking, stitching continuity, overlap splitting, cache/IO, and end-to-end
-runs in full and chunked mode (mono and stereo, residual background reconstruction). They run in
-the service's CI with the `dev` extra, which pulls `separate-core` (scipy, soxr, pyyaml, tqdm,
-rich) but no model backends.
+`tests/separate/` covers chunking, tracking, stitching continuity, overlap splitting, cache/IO,
+device resolution, and end-to-end runs in full and chunked mode (mono and stereo, residual
+background reconstruction). The job tests cover the store, the lane, the job stages against a fake
+transcriber, and the `/v1/jobs` API (skipped without `httpx`). They run in the service's CI with
+the `dev` extra, which pulls `separate-core` (scipy, soxr, pyyaml, tqdm, rich) but no model
+backends.
+
+`scripts/eval_separate_embeddings.py` compares the embedding backends on real recordings (needs the
+`separate` extra and a GPU); see [MODEL_SELECTION.md](MODEL_SELECTION.md).
 
 ## Coding guidelines
 
@@ -78,12 +104,12 @@ rich) but no model backends.
 
 ## Optional dependencies
 
-| Extra | Provides |
-| --- | --- |
-| `separate-core` | scipy, soxr, pyyaml, tqdm, rich — the pipeline with stub backends, and the tests |
-| `separate` | `separate-core` + `demucs` (htdemucs_ft) + `speechbrain` (ECAPA, SepFormer); pyannote comes with `server` |
-| `clearvoice` | ClearerVoice enhancement / super-resolution |
-| `all` | server, vad, separate |
+| Extra           | Provides                                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| `separate-core` | scipy, soxr, pyyaml, tqdm, rich — the pipeline with stub backends, and the tests                          |
+| `separate`      | `separate-core` + `demucs` (htdemucs_ft) + `speechbrain` (ECAPA, SepFormer); pyannote comes with `server` |
+| `clearvoice`    | ClearerVoice enhancement / super-resolution                                                               |
+| `all`           | server, vad, separate                                                                                     |
 
 ## Windows notes
 
@@ -94,4 +120,5 @@ rich) but no model backends.
 ## Hugging Face access
 
 pyannote models are gated: accept the terms on the model card, then set `HF_TOKEN` in the
-environment (the service reads `.env`; the CLI reads the environment only).
+environment (the service reads `.env`; the CLI reads the environment only). The `wespeaker`
+backend loads from the same gated community-1 repository.

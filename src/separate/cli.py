@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=str,
         default=None,
-        help="YAML config path (defaults to configs/default.yaml)",
+        help="YAML config used instead of the packaged default.yaml (not merged)",
     )
     p.add_argument(
         "--sample-rate", type=int, default=None, help="Master sample rate (default 48000)"
