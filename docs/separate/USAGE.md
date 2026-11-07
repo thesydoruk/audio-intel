@@ -19,7 +19,7 @@ There is no standalone command-line entry point.
 # the service, with the job lane on (SEPARATE_ENABLED=1 is the default) and HF_TOKEN for pyannote
 docker run --rm --gpus all -p 8080:8080 -e HF_TOKEN=hf_xxx \
   -v audio-intel-models:/var/lib/whisper -v audio-intel-jobs:/var/lib/jobs \
-  ghcr.io/thesydoruk/audio-intel:2.3.0
+  ghcr.io/thesydoruk/audio-intel:2.3.1
 
 curl -F "file=@recording.mp4" -F separate=true http://localhost:8080/v1/audio/transcriptions
 #   → 202 {"id": "<id>", "status": "queued", "url": "/v1/jobs/<id>"}
@@ -181,9 +181,12 @@ lists the names. (`report.html`, the per-speaker timeline page, is off for jobs:
 ## Caching and resume
 
 Separation stems and diarization results are cached under `cache.dir` keyed by the master file
-hash and the model settings (checkpoint, windows, gate), so re-running with different downstream
-options (TSE, padding, enhancement) skips the expensive stages. `pipeline.force: true`
-recomputes everything. The service keeps its cache in `JOBS_DIR/cache`.
+hash and the model settings (checkpoint, windows, gate, output subtype), so re-running with
+different downstream options (TSE, padding, enhancement) skips the expensive stages. The cache
+keeps its own copy of the stems (`separation/<key>.speech.wav`, `.background.wav`) and hard-links
+them into the output directory of whichever run hits, so a job directory can be deleted (the
+service does that when a client deletes its job) without touching the entry; the service
+prunes entries unused for `JOBS_RESULT_TTL_H` together with expired jobs. `pipeline.force: true` recomputes everything. The service keeps its cache in `JOBS_DIR/cache`.
 
 ## Evaluation suite
 

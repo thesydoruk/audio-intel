@@ -11,7 +11,7 @@ src/separate/
   default.yaml            all defaults, documented inline (ships inside the package)
   audio/                  decode / master WAV / streaming resample / chunking / timeline math,
                           bed.py: the gated background bed (master outside speech, instrumental under it)
-  cache/                  content-addressed stage cache (JSON, npy, file paths)
+  cache/                  content-addressed stage cache (JSON, npy, stem files)
   embeddings/             speaker profile bank (centroids, enrollment clips)
   evaluation/             synthetic scenarios A–J
   models/

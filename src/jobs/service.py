@@ -13,6 +13,7 @@ from typing import Any
 from audio_intel.jobs.lane import BatchBusyError, BatchLane
 from audio_intel.jobs.separate_job import JobCancelled, run_separation_job
 from audio_intel.jobs.store import JobStore
+from audio_intel.separate.cache.store import CacheStore
 
 log = logging.getLogger("audio-intel")
 
@@ -24,9 +25,11 @@ class JobService:
         self.cfg = cfg
         self.transcriber = transcriber
         self._clock = clock
-        self.store = JobStore(
-            cfg.jobs_dir, result_ttl_s=cfg.jobs_result_ttl_h * 3600.0, clock=clock
-        )
+        self._ttl_s = cfg.jobs_result_ttl_h * 3600.0
+        self.store = JobStore(cfg.jobs_dir, result_ttl_s=self._ttl_s, clock=clock)
+        # The pipeline's stage cache (separation stems, diarization) lives next to the jobs
+        # and is pruned on the same TTL, counted from the entry's last use.
+        self.cache = CacheStore(Path(cfg.jobs_dir) / "cache")
         self.lane = BatchLane(
             workers=cfg.batch_concurrent_jobs, queue_max=cfg.batch_queue_max, run=self._run
         )
@@ -137,6 +140,9 @@ class JobService:
         ids = self.store.purge_expired(now)
         if ids:
             log.info("Purged %d expired job(s)", len(ids))
+        pruned = self.cache.prune(self._ttl_s, now)
+        if pruned:
+            log.info("Pruned %d stage-cache file(s) unused for %.0fh", pruned, self._ttl_s / 3600)
         return ids
 
     def snapshot(self) -> dict[str, Any]:

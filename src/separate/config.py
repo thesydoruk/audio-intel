@@ -54,6 +54,15 @@ def load_config(
 def ensure_cache_dir(cfg: dict[str, Any]) -> Path:
     path = Path(cfg.get("cache", {}).get("dir", "./cache"))
     path.mkdir(parents=True, exist_ok=True)
-    for sub in ("diarization", "embeddings", "overlap", "tse", "enhancement", "sr", "audio"):
+    for sub in (
+        "separation",
+        "diarization",
+        "embeddings",
+        "overlap",
+        "tse",
+        "enhancement",
+        "sr",
+        "audio",
+    ):
         (path / sub).mkdir(parents=True, exist_ok=True)
     return path

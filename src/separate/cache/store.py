@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +98,77 @@ class CacheStore:
     def file_path(self, stage: str, key: str, suffix: str) -> Path:
         """Path for a stage artifact stored as a regular file (e.g. a WAV stem)."""
         return self._path(stage, key, suffix)
+
+    def has_file(self, stage: str, key: str, suffix: str) -> bool:
+        return self.enabled and self._path(stage, key, suffix).is_file()
+
+    def put_file(self, stage: str, key: str, suffix: str, src: str | Path) -> None:
+        """Keep ``src`` as this stage artifact: a hard link where the volume allows, else a copy.
+
+        The cache owns that name from here on; the caller's file may be deleted later
+        (a job directory usually is) without touching the entry.
+        """
+        if not self.enabled:
+            return
+        dst = self._path(stage, key, suffix)
+        tmp = dst.with_name(dst.name + ".tmp")
+        _link_or_copy(Path(src), tmp)
+        tmp.replace(dst)
+
+    def get_file(self, stage: str, key: str, suffix: str, dst: str | Path) -> bool:
+        """Materialize the cached artifact at ``dst`` (hard link where possible).
+
+        Returns False on a miss or when the file cannot be materialized; ``dst`` is then
+        left as it was.
+        """
+        if not self.enabled:
+            return False
+        src = self._path(stage, key, suffix)
+        if not src.is_file():
+            return False
+        dst = Path(dst)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + ".tmp")
+        try:
+            _link_or_copy(src, tmp)
+            tmp.replace(dst)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            return False
+        try:
+            os.utime(src, None)  # a hit counts as use: prune() keeps hot entries
+        except OSError:
+            pass
+        return True
+
+    # ---------------------------------------------------------------- janitor
+    def prune(self, max_age_s: float, now: float | None = None) -> int:
+        """Delete every cache file not written or hit for ``max_age_s`` seconds.
+
+        Stems are written once per distinct recording and model settings, so without this the
+        cache would grow with every new recording; ``save_*`` / ``put_file`` write and
+        ``get_file`` touches, so mtime is "last use".
+        """
+        if not self.enabled or not self.root.is_dir():
+            return 0
+        now = time.time() if now is None else now
+        removed = 0
+        for p in self.root.rglob("*"):
+            try:
+                if p.is_file() and now - p.stat().st_mtime > max_age_s:
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    dst.unlink(missing_ok=True)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
 
 
 def _jsonable(value: Any) -> Any:

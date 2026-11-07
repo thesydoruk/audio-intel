@@ -462,6 +462,7 @@ class SpeakerExtractPipeline:
         speech_path = output_dir / str(out_cfg.get("speech_stem_name", "_speech_48k.wav"))
         background_path = output_dir / str(out_cfg.get("background_name", "background_48k.wav"))
         bed_cfg = sep_cfg.get("bed") or {}
+        subtype = str(out_cfg.get("subtype", "PCM_24"))
         key = self.cache.key(
             "separation",
             src_hash,
@@ -473,15 +474,17 @@ class SpeakerExtractPipeline:
             bed_cfg.get("threshold_db"),
             bed_cfg.get("hold_ms"),
             bed_cfg.get("fade_ms"),
+            subtype,
         )
-        cached = self.cache.load_json("separation", key) if resume else None
+        # The cache owns its own copy of both stems; a hit materializes them into THIS
+        # output directory (the job's), never hands out another directory's files.
         if (
-            cached
-            and Path(cached.get("speech", "")).exists()
-            and Path(cached.get("background", "")).exists()
+            resume
+            and self.cache.get_file("separation", key, ".speech.wav", speech_path)
+            and self.cache.get_file("separation", key, ".background.wav", background_path)
         ):
             log_cb("Separation: reusing cached stems")
-            return Path(cached["speech"]), Path(cached["background"])
+            return speech_path, background_path
 
         log_cb(f"Separating speech / background with RoFormer ({sep_cfg.get('model')})")
         sep = self.separator()
@@ -490,13 +493,14 @@ class SpeakerExtractPipeline:
         with self._gpu():
             speech, background = sep.separate(master, sr)
         del master
-        subtype = str(out_cfg.get("subtype", "PCM_24"))
+        # Never write through a hard link a half-hit may have left behind.
+        speech_path.unlink(missing_ok=True)
+        background_path.unlink(missing_ok=True)
         write_wav(speech_path, speech, sr, subtype=subtype)
         write_wav(background_path, background, sr, subtype=subtype)
         self._maybe_unload(sep)
-        self.cache.save_json(
-            "separation", key, {"speech": str(speech_path), "background": str(background_path)}
-        )
+        self.cache.put_file("separation", key, ".speech.wav", speech_path)
+        self.cache.put_file("separation", key, ".background.wav", background_path)
         return speech_path, background_path
 
     def _diarize_full(
