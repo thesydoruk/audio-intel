@@ -21,16 +21,15 @@ Input: anything ffmpeg can decode (wav, mp3, m4a, ogg, mp4, mov, …). One file 
 
 The same package also does **speaker separation**: one recording becomes a clean 48 kHz track
 per speaker plus a background track (music, effects), sample-aligned with the master, for
-dubbing and per-speaker ASR. It runs from the command line (`audio-intel separate`, see
-[docs/separate/USAGE.md](docs/separate/USAGE.md)) or through the service as a background job
-that also transcribes every speaker track
-([`separate=true`](#post-v1audiotranscriptions-with-separatetrue)).
+dubbing and per-speaker ASR. It runs through the service as a background job that also
+transcribes every speaker track ([`separate=true`](#post-v1audiotranscriptions-with-separatetrue);
+see [docs/separate/USAGE.md](docs/separate/USAGE.md)).
 
-| Stage (separation) | Technology                         | What you get                                   |
-| ------------------ | ---------------------------------- | ---------------------------------------------- |
-| Speech / bed       | Demucs `htdemucs_ft`               | Vocals stem + background (music, effects)      |
-| Speakers           | pyannote community-1 on the vocals | Global speaker turns and overlap regions       |
-| Overlaps           | SpeechBrain SepFormer              | Each overlapped speaker extracted to its track |
+| Stage (separation) | Technology                         | What you get                                                                         |
+| ------------------ | ---------------------------------- | ------------------------------------------------------------------------------------ |
+| Speech / bed       | BS-RoFormer + gated bed            | Vocals stem + background: the mix where nobody speaks, the instrumental under speech |
+| Speakers           | pyannote community-1 on the vocals | Global speaker turns and overlap regions                                             |
+| Overlaps           | SpeechBrain SepFormer              | Each overlapped speaker extracted to its track                                       |
 
 ## Contents
 
@@ -61,8 +60,8 @@ The Docker image and the `cu128` torch index below cover every card from Ampere 
 
 **Disk.** The Docker image is about 6 GB to download (13 GB unpacked). Models are downloaded
 on first use into a cache that survives restarts: Whisper `large-v3` about 3 GB, pyannote and
-PANNs a few hundred MB, the separation models (Demucs, SepFormer) a few hundred MB more on the
-first separation job. Each job keeps its input, tracks (24-bit 48 kHz WAVs, so a few hundred MB
+PANNs a few hundred MB, the separation models (BS-RoFormer 640 MB, SepFormer) on the first
+separation job. Each job keeps its input, tracks (24-bit 48 kHz WAVs, so a few hundred MB
 per hour of audio) and stage cache in `JOBS_DIR` until `JOBS_RESULT_TTL_H` expires.
 
 ## Install
@@ -85,10 +84,10 @@ docker run -d --name audio-intel --gpus all --restart unless-stopped \
   -v audio-intel-jobs:/var/lib/jobs \
   -e HF_HOME=/var/lib/whisper -e TORCH_HOME=/var/lib/whisper/torch \
   -e JOBS_DIR=/var/lib/jobs \
-  ghcr.io/thesydoruk/audio-intel:2.2.0
+  ghcr.io/thesydoruk/audio-intel:2.3.0
 ```
 
-The named volumes keep downloaded models (Whisper, pyannote, PANNs, Demucs) and separation
+The named volumes keep downloaded models (Whisper, pyannote, PANNs, BS-RoFormer) and separation
 jobs across restarts and upgrades. On the first start
 the container downloads Whisper before it answers, so give it a few minutes, then check:
 
@@ -97,7 +96,7 @@ curl http://localhost:8080/health
 ```
 
 ```json
-{"status": "ok", "version": "2.2.0", "model": "large-v3", "diarization_enabled": false,
+{"status": "ok", "version": "2.3.0", "model": "large-v3", "diarization_enabled": false,
  "speaker_embedding_model": null, "alignment_enabled": false}
 ```
 
@@ -227,7 +226,7 @@ delete the downloaded models:
 
 ```bash
 docker rm -f audio-intel
-docker rmi ghcr.io/thesydoruk/audio-intel:2.2.0
+docker rmi ghcr.io/thesydoruk/audio-intel:2.3.0
 docker volume rm audio-intel-models audio-intel-panns audio-intel-jobs   # models and jobs (optional)
 ```
 
@@ -322,9 +321,7 @@ Variable groups:
 
 `SEPARATE_CONFIG` points at a YAML with the settings of
 [`src/separate/default.yaml`](src/separate/default.yaml) jobs should change (only the keys it
-lists; the rest keep their defaults); `SEPARATE_DEVICE` defaults to `ASR_DEVICE`. The
-standalone `audio-intel separate` CLI does not read these variables (only `HF_TOKEN` from the
-environment); it takes flags and `--config` instead.
+lists; the rest keep their defaults); `SEPARATE_DEVICE` defaults to `ASR_DEVICE`.
 
 `MODEL_CACHE_HOST_DIR`, `PANNS_CACHE_HOST_DIR`, `JOBS_HOST_DIR`, `AUDIO_INTEL_VERSION` and
 `CUDA_VISIBLE_DEVICES` are read only by Docker Compose, not by the Python app.
@@ -538,10 +535,12 @@ separate=true → JOBS_DIR/<id>/ → batch lane (BATCH_CONCURRENT_JOBS)
 ```
 
 1. **Separate.** The pipeline from [docs/separate/USAGE.md](docs/separate/USAGE.md) runs on the
-   upload: Demucs splits speech from the bed, pyannote diarizes the vocals stem, SepFormer
+   upload: BS-RoFormer splits speech from the bed (the background keeps the original mix
+   wherever nobody speaks and takes the instrumental stem only under speech), pyannote
+   diarizes the vocals stem, SepFormer
    handles overlaps, and each speaker gets a full-length 48 kHz track. It borrows the
    service's pyannote pipeline (and, with `SEPARATE_EMBEDDINGS=wespeaker`, its embedding
-   model), so only Demucs and SepFormer are extra; they form the `separation` model group.
+   model), so only RoFormer and SepFormer are extra; they form the `separation` model group.
 1. **Transcribe each track** with the same Whisper as interactive requests. The speaker is
    known before decoding, and with the music gone the hallucination filter has less to do.
 1. **Embed** each speaker from their own track, in the same space as `/v1/speakers/embed`.
@@ -566,7 +565,7 @@ card first at each stage boundary. A job's stage cache lives in `JOBS_DIR/cache`
 | Job `failed` with `Failed to load pyannote/speaker-diarization-community-1`                      | Separation diarizes with the gated pyannote model: set `HF_TOKEN` and accept the model's conditions.                                                                              |
 | Job `failed` with `server restarted before the job finished`                                     | Jobs are not resumed after a restart; submit the file again.                                                                                                                      |
 | Job result has `speakers` without `embedding`                                                    | `SPEAKERS_ENABLED=0`: the roster embeddings come from the service's speaker model. Enable it (with `HF_TOKEN`).                                                                   |
-| The first separation job is slow to start                                                        | Demucs and SepFormer download and load on first use (the `separation` model group).                                                                                               |
+| The first separation job is slow to start                                                        | BS-RoFormer (640 MB) and SepFormer download and load on first use (the `separation` model group).                                                                                 |
 
 ## Project layout
 
@@ -581,7 +580,7 @@ src/                         # import: audio_intel.*
 ├── diarization/             # pyannote + speaker merge/embeddings
 ├── events/                  # PANNs AED
 ├── jobs/                    # job store (SQLite), batch lane, separation job
-├── separate/                # speaker separation pipeline + `audio-intel separate` CLI
+├── separate/                # speaker separation pipeline (runs as a job)
 └── server/                  # FastAPI app
 docs/separate/               # separation: usage, model selection, development
 scripts/                     # setup / run / uninstall, smoke checks, eval scripts
@@ -593,7 +592,7 @@ scripts/                     # setup / run / uninstall, smoke checks, eval scrip
 pip install -e .              # core: faster-whisper, decode
 pip install -e ".[server]"    # + FastAPI, pyannote, PANNs
 pip install -e ".[vad]"       # + silero-vad
-pip install -e ".[separate]"  # + Demucs, SpeechBrain (SepFormer, ECAPA) for separation
+pip install -e ".[separate]"  # + audio-separator (BS-RoFormer), SpeechBrain (SepFormer, ECAPA)
 pip install -e ".[clearvoice]" # + ClearerVoice enhancement / super-resolution (optional)
 pip install -e ".[all]"       # server + vad + separate
 pip install -e ".[dev]"       # pytest, ruff, pre-commit, separate-core (stub backends)
@@ -640,7 +639,7 @@ needs the CUDA 12.8 image), that CTranslate2 sees the GPU, then starts the servi
 transcribes the sample. `HF_TOKEN` in the environment enables `diarize=1`.
 
 `scripts/eval_hallucination.py <manifest.jsonl>` measures the hallucination filter on a
-labelled corpus (speech clips with reference text, non-speech audio such as Demucs
+labelled corpus (speech clips with reference text, non-speech audio such as separated
 background stems) and prints a threshold grid; its docstring has the manifest format and
 the `docker run` line. Change the filter's defaults only with its numbers.
 
@@ -676,6 +675,7 @@ In particular, pyannote checkpoints on Hugging Face
 (`pyannote/speaker-diarization-community-1`, CC-BY-4.0) are gated:
 accept their conditions and set `HF_TOKEN` before enabling diarization.
 Whisper, Silero VAD, WhisperX align models, PANNs / AudioSet assets, and the separation
-models (Demucs, SpeechBrain SepFormer / ECAPA, optional ClearerVoice) are downloaded
+models (BS-RoFormer through audio-separator, SpeechBrain SepFormer / ECAPA, optional
+ClearerVoice) are downloaded
 separately and are not redistributed in this repository; see
 [docs/separate/MODEL_SELECTION.md](docs/separate/MODEL_SELECTION.md#licenses).

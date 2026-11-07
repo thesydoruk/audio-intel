@@ -303,12 +303,12 @@ class SpeakerExtractPipeline:
 
         # 2) Speech / background separation -------------------------------------
         sep_cfg = cfg.get("separation", {})
-        sep_backend = str(sep_cfg.get("backend", "demucs"))
+        sep_backend = str(sep_cfg.get("backend", "roformer"))
         if not pipe.get("run_separation", True):
             sep_backend = "none"
         speech_path = master_path
         background_path: Path | None = None
-        if sep_backend == "demucs":
+        if sep_backend == "roformer":
             speech_path, background_path = self._separate(
                 master_path,
                 output_dir,
@@ -461,13 +461,18 @@ class SpeakerExtractPipeline:
         out_cfg = self.cfg.get("output", {})
         speech_path = output_dir / str(out_cfg.get("speech_stem_name", "_speech_48k.wav"))
         background_path = output_dir / str(out_cfg.get("background_name", "background_48k.wav"))
+        bed_cfg = sep_cfg.get("bed") or {}
         key = self.cache.key(
             "separation",
             src_hash,
+            sep_cfg.get("backend"),
             sep_cfg.get("model"),
-            sep_cfg.get("shifts"),
+            sep_cfg.get("segment_size"),
             sep_cfg.get("overlap"),
-            sep_cfg.get("segment"),
+            sep_cfg.get("batch_size"),
+            bed_cfg.get("threshold_db"),
+            bed_cfg.get("hold_ms"),
+            bed_cfg.get("fade_ms"),
         )
         cached = self.cache.load_json("separation", key) if resume else None
         if (
@@ -478,9 +483,7 @@ class SpeakerExtractPipeline:
             log_cb("Separation: reusing cached stems")
             return Path(cached["speech"]), Path(cached["background"])
 
-        log_cb(
-            f"Separating speech / background with Demucs ({sep_cfg.get('model', 'htdemucs_ft')})"
-        )
+        log_cb(f"Separating speech / background with RoFormer ({sep_cfg.get('model')})")
         sep = self.separator()
         sep.ensure_loaded()
         master, sr = read_audio(master_path)
@@ -888,7 +891,7 @@ class SpeakerExtractPipeline:
     ) -> PipelineResult:
         cfg = self.cfg
         out_cfg = cfg.get("output", {})
-        sep_backend = str(cfg.get("separation", {}).get("backend", "demucs"))
+        sep_backend = str(cfg.get("separation", {}).get("backend", "roformer"))
         subtype = str(out_cfg.get("subtype", "PCM_24"))
         speaker_files: dict[str, str] = {}
 
@@ -910,12 +913,12 @@ class SpeakerExtractPipeline:
         if (
             not out_cfg.get("write_background", True)
             and background_path is not None
-            and sep_backend != "demucs"
+            and sep_backend != "roformer"
         ):
             background_path = None
         if (
             not out_cfg.get("write_background", True)
-            and sep_backend == "demucs"
+            and sep_backend == "roformer"
             and background_path is not None
         ):
             # Stem was needed for separation; the user asked not to keep it.
@@ -924,7 +927,9 @@ class SpeakerExtractPipeline:
             except OSError:
                 pass
             background_path = None
-        if sep_backend == "demucs" and not cfg.get("separation", {}).get("write_speech_stem", True):
+        if sep_backend == "roformer" and not cfg.get("separation", {}).get(
+            "write_speech_stem", True
+        ):
             try:
                 if speech_path != master_path:
                     speech_path.unlink()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-intel"
-version = "2.2.0"
+version = "2.3.0"
 description = "Audio intelligence: Whisper transcription, CTC alignment, diarization, and sound-event detection"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -59,11 +59,22 @@ server = [
 # Dockerfile installs it with --no-deps (its alignment code never imports pyannote).
 align = ["whisperx>=3.3.0"]
 vad = ["silero-vad>=5.1"]
-# Speaker separation (audio-intel separate): the pure-Python part runs the stub
-# backends and the tests; `separate` adds the models (Demucs, SpeechBrain
-# SepFormer / ECAPA). ClearerVoice enhancement is a further opt-in.
-separate-core = ["scipy>=1.11", "soxr>=0.3.7", "pyyaml>=6.0", "tqdm>=4.66", "rich>=13.7"]
-separate = ["audio-intel[separate-core]", "demucs>=4.0.1", "speechbrain>=1.0", "safetensors>=0.4"]
+# Speaker separation (separate=true jobs): the pure-Python part runs the stub
+# backends and the tests; `separate` adds the models (BS-RoFormer through
+# audio-separator, SpeechBrain SepFormer / ECAPA). ClearerVoice enhancement is a
+# further opt-in.
+#
+# audio-separator declares every architecture's dependency (demucs, diffq, which
+# needs a C compiler, onnx2torch with torchvision, onnxruntime...). The RoFormer
+# path needs only a few of them, so the Dockerfile installs it with --no-deps and
+# lists those explicitly; a local `pip install -e ".[separate]"` takes the full set.
+separate-core = ["scipy>=1.11", "soxr>=0.3.7", "pyyaml>=6.0", "tqdm>=4.66"]
+separate = [
+    "audio-intel[separate-core]",
+    "audio-separator>=0.48.0",
+    "speechbrain>=1.0",
+    "safetensors>=0.4",
+]
 clearvoice = ["clearvoice"]
 all = ["audio-intel[server,vad,separate]"]
 # ruff matches .pre-commit-config.yaml so CI and the hook format identically.

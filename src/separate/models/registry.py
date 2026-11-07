@@ -23,15 +23,23 @@ def _device_and_dtype(cfg: dict, device: str | None) -> tuple[str, str]:
 def build_separator(cfg: dict, device: str | None = None) -> SourceSeparator:
     device, dtype = _device_and_dtype(cfg, device)
     sep = cfg.get("separation", {})
-    backend = sep.get("backend", "demucs")
-    if backend == "demucs":
-        from audio_intel.separate.models.separation.demucs import DemucsSeparator
+    backend = sep.get("backend", "roformer")
+    if backend == "roformer":
+        from audio_intel.separate.models.separation.roformer import (
+            DEFAULT_MODEL,
+            RoformerSeparator,
+            default_model_dir,
+        )
 
-        return DemucsSeparator(
-            model_name=sep.get("model", "htdemucs_ft"),
-            shifts=int(sep.get("shifts", 1)),
-            overlap=float(sep.get("overlap", 0.25)),
-            segment=sep.get("segment"),
+        overlap = sep.get("overlap")
+        batch_size = sep.get("batch_size")
+        return RoformerSeparator(
+            model_filename=str(sep.get("model", DEFAULT_MODEL)),
+            segment_size=int(sep.get("segment_size", 256)),
+            overlap=None if overlap is None else int(overlap),
+            batch_size=None if batch_size is None else int(batch_size),
+            bed=sep.get("bed") or {},
+            model_dir=default_model_dir(cfg.get("cache", {}).get("dir", "./cache")),
             device=device,
             dtype=dtype,
         )
@@ -39,7 +47,11 @@ def build_separator(cfg: dict, device: str | None = None) -> SourceSeparator:
         from audio_intel.separate.models.separation.identity import IdentitySeparator
 
         return IdentitySeparator(device=device, dtype=dtype)
-    raise ValueError(f"Unknown separation backend: {backend}")
+    # Anything else, Demucs included: there is one separator, and a config that asks for
+    # another must fail where it is read rather than fall back quietly.
+    raise ValueError(
+        f"Unknown separation backend: {backend!r} (use 'roformer', or 'residual' / 'none')"
+    )
 
 
 def build_diarizer(cfg: dict, device: str | None = None) -> Diarizer:

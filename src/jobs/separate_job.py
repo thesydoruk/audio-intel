@@ -2,9 +2,10 @@
 
 Stages, each a checkpoint for cancellation:
 
-1. ``separating``   — the separation pipeline (Demucs, pyannote on the vocals
-   stem, SepFormer in overlaps) writes one 48 kHz track per speaker and the
-   background bed. Inside the service the pipeline borrows the service's
+1. ``separating``   — the separation pipeline (BS-RoFormer, pyannote on the
+   vocals stem, SepFormer in overlaps) writes one 48 kHz track per speaker and
+   the background bed (the original mix where nobody speaks, the instrumental
+   stem under speech). Inside the service the pipeline borrows the service's
    loaded pyannote pipeline (and, with ``SEPARATE_EMBEDDINGS=wespeaker``, its
    embedding model) through ``_providers`` and takes GPU tokens at batch
    priority, so interactive requests get the card at the next stage boundary.

@@ -9,8 +9,8 @@ the environment, and `pip install -e ".[separate]"` adds the model backends.
 ```text
 src/separate/
   default.yaml            all defaults, documented inline (ships inside the package)
-  cli.py                  `audio-intel separate` argument parsing → config overrides
-  audio/                  decode / master WAV / streaming resample / chunking / timeline math
+  audio/                  decode / master WAV / streaming resample / chunking / timeline math,
+                          bed.py: the gated background bed (master outside speech, instrumental under it)
   cache/                  content-addressed stage cache (JSON, npy, file paths)
   embeddings/             speaker profile bank (centroids, enrollment clips)
   evaluation/             synthetic scenarios A–J
@@ -18,7 +18,7 @@ src/separate/
     base.py               interfaces: SourceSeparator, Diarizer, SpeakerEmbedder, OverlapDetector,
                           TargetSpeakerExtractor, SpeechEnhancer, SpeechSuperResolution
     registry.py           config -> backend
-    separation/           Demucs, identity
+    separation/           BS-RoFormer (audio-separator) + gated bed, identity
     diarization/          pyannote, stub
     embeddings/           SpeechBrain ECAPA, WeSpeaker (pyannote community-1), stub
     overlap/              co-activity / pyannote OSD, stub
@@ -36,7 +36,8 @@ tests/separate/           offline tests on the stub backends
 ## Pipeline stages (orchestrator.py)
 
 1. `materialize_master_wav` — decode once to `_master_48k.wav` (mono/stereo per `audio.master_channels`).
-1. `_separate` — Demucs → `_speech_48k.wav` + `background_48k.wav` (cached by master hash + model).
+1. `_separate` — BS-RoFormer → `_speech_48k.wav` (vocals stem) + `background_48k.wav` (the gated bed:
+   master where the vocals stem is quiet, instrumental under speech); cached by master hash + model + gate.
 1. `_diarize_full` (or `_diarize_chunked`) on the 16 kHz speech stem → global turns; `merge_segments`,
    `relabel_by_duration` (speaker_00 = talks most).
 1. Overlap detection on the turns.
@@ -51,13 +52,13 @@ tests/separate/           offline tests on the stub backends
 `registry.py` reads an optional `_providers` entry in the config: `_providers.diarization` and
 `_providers.embedding` are callables that return an already loaded pyannote `Pipeline` /
 `Inference`. The transcription service passes its own instances there, so one copy of each model
-serves both transcription and separation in one process. Without providers the backends load
-their own copies, as the CLI does. The service passes `diarization` when `SPEAKERS_ENABLED=1`, and
+serves both transcription and separation in one process. Without providers (the tests, the eval
+scripts) the backends load their own copies. The service passes `diarization` when `SPEAKERS_ENABLED=1`, and
 `embedding` only when `SEPARATE_EMBEDDINGS=wespeaker` as well (the default).
 
 `_providers.gpu_guard` is a context-manager factory the orchestrator wraps around every GPU stage;
 the service passes one that takes a GPU token at batch priority, so interactive requests go first.
-The CLI has none (`nullcontext`).
+Without one the orchestrator uses `nullcontext`.
 
 The service side lives in `src/jobs/`:
 
@@ -83,11 +84,11 @@ ruff check src tests scripts
 ```
 
 `tests/separate/` covers chunking, tracking, stitching continuity, overlap splitting, cache/IO,
-device resolution, and end-to-end runs in full and chunked mode (mono and stereo, residual
+device resolution, the gated bed, the RoFormer adapter against a fake `audio_separator`, the
+separation registry, and end-to-end runs in full and chunked mode (mono and stereo, residual
 background reconstruction). The job tests cover the store, the lane, the job stages against a fake
 transcriber, and the `/v1/jobs` API (skipped without `httpx`). They run in the service's CI with
-the `dev` extra, which pulls `separate-core` (scipy, soxr, pyyaml, tqdm, rich) but no model
-backends.
+the `dev` extra, which pulls `separate-core` (scipy, soxr, pyyaml, tqdm) but no model backends.
 
 `scripts/eval_separate_embeddings.py` compares the embedding backends on real recordings (needs the
 `separate` extra and a GPU); see [MODEL_SELECTION.md](MODEL_SELECTION.md).
@@ -104,12 +105,12 @@ backends.
 
 ## Optional dependencies
 
-| Extra           | Provides                                                                                                  |
-| --------------- | --------------------------------------------------------------------------------------------------------- |
-| `separate-core` | scipy, soxr, pyyaml, tqdm, rich — the pipeline with stub backends, and the tests                          |
-| `separate`      | `separate-core` + `demucs` (htdemucs_ft) + `speechbrain` (ECAPA, SepFormer); pyannote comes with `server` |
-| `clearvoice`    | ClearerVoice enhancement / super-resolution                                                               |
-| `all`           | server, vad, separate                                                                                     |
+| Extra           | Provides                                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `separate-core` | scipy, soxr, pyyaml, tqdm — the pipeline with stub backends, and the tests                                         |
+| `separate`      | `separate-core` + `audio-separator` (BS-RoFormer) + `speechbrain` (ECAPA, SepFormer); pyannote comes with `server` |
+| `clearvoice`    | ClearerVoice enhancement / super-resolution                                                                        |
+| `all`           | server, vad, separate                                                                                              |
 
 ## Windows notes
 
@@ -120,5 +121,24 @@ backends.
 ## Hugging Face access
 
 pyannote models are gated: accept the terms on the model card, then set `HF_TOKEN` in the
-environment (the service reads `.env`; the CLI reads the environment only). The `wespeaker`
+environment (the service reads `.env`). The `wespeaker`
 backend loads from the same gated community-1 repository.
+
+## audio-separator in the image
+
+`audio-separator` declares the dependencies of every architecture it can run (Demucs, `diffq`,
+`onnx2torch` with torchvision, onnx). The RoFormer path imports none of them, and `diffq` has
+no wheel for the image's Python and needs a compiler the runtime image lacks, so the Dockerfile
+installs `audio-separator --no-deps` and then the packages the RoFormer path does import
+(`beartype`, `rotary-embedding-torch`, `onnxruntime`, `pydub`, `ml_collections`, `resampy`,
+`audioread`; `librosa`, `einops`, `soundfile`, `tqdm`, `pyyaml`, `requests` come with the other
+extras). When bumping `audio-separator`, import `audio_separator.separator` in the built image
+and run one job; a missing module shows up there, not in the unit tests.
+
+`RoformerSeparator` writes the input as a float32 WAV at half scale and reads the stems back
+at double: audio-separator mirrors the input subtype for its outputs (float in, float out) and
+rescales any stem whose peak exceeds `normalization_threshold` (1.0 at most), which would break
+`Instrumental == source − Vocals`; at half scale no stem gets there. It also fixes the sample
+rate per `Separator` instance, so the adapter rebuilds it when an input arrives at another
+rate (the model runs at the input rate; 48 kHz measured at least as clean as a 44.1 kHz round
+trip).
