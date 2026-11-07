@@ -84,7 +84,7 @@ docker run -d --name audio-intel --gpus all --restart unless-stopped \
   -v audio-intel-jobs:/var/lib/jobs \
   -e HF_HOME=/var/lib/whisper -e TORCH_HOME=/var/lib/whisper/torch \
   -e JOBS_DIR=/var/lib/jobs \
-  ghcr.io/thesydoruk/audio-intel:2.3.0
+  ghcr.io/thesydoruk/audio-intel:2.3.1
 ```
 
 The named volumes keep downloaded models (Whisper, pyannote, PANNs, BS-RoFormer) and separation
@@ -96,7 +96,7 @@ curl http://localhost:8080/health
 ```
 
 ```json
-{"status": "ok", "version": "2.3.0", "model": "large-v3", "diarization_enabled": false,
+{"status": "ok", "version": "2.3.1", "model": "large-v3", "diarization_enabled": false,
  "speaker_embedding_model": null, "alignment_enabled": false}
 ```
 
@@ -226,7 +226,7 @@ delete the downloaded models:
 
 ```bash
 docker rm -f audio-intel
-docker rmi ghcr.io/thesydoruk/audio-intel:2.3.0
+docker rmi ghcr.io/thesydoruk/audio-intel:2.3.1
 docker volume rm audio-intel-models audio-intel-panns audio-intel-jobs   # models and jobs (optional)
 ```
 

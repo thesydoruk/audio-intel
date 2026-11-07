@@ -180,6 +180,33 @@ class JobServiceTests(unittest.TestCase):
             finally:
                 service.close()
 
+    def test_purge_prunes_the_stage_cache_on_the_jobs_ttl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = replace(
+                load_config(),
+                jobs_dir=str(root / "jobs"),
+                separate_device="cpu",
+                jobs_result_ttl_h=1.0,
+            )
+            now = 1_000_000.0
+            service = JobService(cfg, FakeTranscriber(cfg, root), clock=lambda: now)
+            try:
+                cache = root / "jobs" / "cache" / "separation"
+                cache.mkdir(parents=True, exist_ok=True)
+                stale, fresh = cache / "stale.speech.wav", cache / "fresh.speech.wav"
+                stale.write_bytes(b"s")
+                fresh.write_bytes(b"f")
+                import os
+
+                os.utime(stale, (now - 3601, now - 3601))
+                os.utime(fresh, (now - 10, now - 10))
+                service.purge(now)
+                self.assertFalse(stale.exists())
+                self.assertTrue(fresh.exists())
+            finally:
+                service.close()
+
 
 if __name__ == "__main__":
     unittest.main()
