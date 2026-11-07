@@ -15,14 +15,22 @@ audio:
 
 separation:
   # Speech vs. background separation applied to the whole mix before diarization.
-  #   demucs   - Demucs (htdemucs_ft): vocals -> speech stem, drums+bass+other -> background
+  #   roformer - BS-RoFormer through audio-separator: Vocals -> speech stem; the background
+  #              is the gated bed below (the original mix where nobody speaks, the
+  #              Instrumental stem under speech). The only model-based backend.
   #   residual - no model; background = master minus the assembled speaker tracks
   #   none     - no background track at all
-  backend: demucs
-  model: htdemucs_ft          # htdemucs_ft (best) | htdemucs | mdx_extra
-  shifts: 1                   # test-time augmentation; 2 is a little better and 2x slower
-  overlap: 0.25
-  segment: null               # seconds per inference window; null = model default
+  # Any other value (demucs included) is an error.
+  backend: roformer
+  model: model_bs_roformer_ep_317_sdr_12.9755.ckpt   # an audio-separator MDXC/RoFormer checkpoint
+  segment_size: 256           # only used for inputs shorter than one model window
+  overlap: null               # overlapping prediction windows (2-50); null = model default (4)
+  batch_size: null            # null = model default (1); RoFormer gains little from more
+  # The gate that builds the background bed from the stems (audio/bed.py):
+  bed:
+    threshold_db: -45         # vocals-stem frame RMS above this (relative to its peak) = speech
+    hold_ms: 150              # extend every active region this much on both sides
+    fade_ms: 150              # linear source -> instrumental ramps outside each region
   write_speech_stem: true     # keep _speech_48k.wav (vocals stem) next to the outputs
 
 diarization:
@@ -100,7 +108,7 @@ tse:
   wiener_power: 1.0
 
 enhancement:
-  # Optional ClearerVoice speech enhancement. Off by default: Demucs already removes
+  # Optional ClearerVoice speech enhancement. Off by default: the separator already removes
   # music/effects, and enhancement can colour the voice, which dubbing/voice-cloning dislikes.
   enabled: false
   single_speaker_backend: clearvoice_mossformer2_se_48k

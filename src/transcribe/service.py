@@ -168,7 +168,7 @@ class Transcriber:
                 ", ".join(self._aligners),
             )
         # Separation inside the service: borrows the pyannote copies above and
-        # takes GPU tokens at batch priority; Demucs / SepFormer are its own group.
+        # takes GPU tokens at batch priority; RoFormer / SepFormer are its own group.
         self.separation: SeparationEngine | None = None
         self._group_separate = None
         if cfg.separate_enabled:

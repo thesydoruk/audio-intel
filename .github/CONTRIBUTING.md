@@ -45,7 +45,7 @@ Hooks on each commit:
 - **ruff** — lint (`--fix`) and format for `*.py`
 - **mdformat** — format `*.md`
 
-Unit tests mock model loads and do not download Whisper, pyannote, PANNs, Demucs
+Unit tests mock model loads and do not download Whisper, pyannote, PANNs, BS-RoFormer
 or SpeechBrain weights; the separation tests run on stub backends. Work on the
 separation pipeline is described in
 [docs/separate/DEVELOPMENT.md](../docs/separate/DEVELOPMENT.md). Do not commit `.env`, tokens, audio fixtures, or cache directories
@@ -58,7 +58,7 @@ under `data/`.
 1. Match the existing style (Ruff, 100-character line length, type hints).
 1. Add or update tests when behavior changes.
 1. Update the README (and `.env.example`) when you change the API, env vars, or
-   extras, and `docs/separate/` when you change the separation pipeline or CLI.
+   extras, and `docs/separate/` when you change the separation pipeline.
 
 By submitting a contribution you agree that it is licensed under the
 [MIT License](../LICENSE), copyright Valerii Sydoruk unless you state otherwise

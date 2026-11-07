@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Compare speaker-embedding backends of the separation pipeline on real recordings.
 
-Runs `audio-intel separate` twice per input, once with ``speechbrain_ecapa`` and
+Runs the separation pipeline twice per input, once with ``speechbrain_ecapa`` and
 once with ``wespeaker``, and reports what differs: the diarization (which does
 not depend on the embedder in full mode and must match), the speaker profiles'
 within-speaker similarity, how many overlap regions picked a different source,
@@ -10,7 +10,7 @@ and the sample agreement of each speaker track between the two runs.
     python scripts/eval_separate_embeddings.py <recording>... --out ./eval_sep
 
 Needs the `separate` extra and a GPU for a sensible runtime. The stage cache
-makes the second run skip Demucs and diarization, so each extra backend costs
+makes the second run skip separation and diarization, so each extra backend costs
 only profiles and overlap extraction.
 """
 
