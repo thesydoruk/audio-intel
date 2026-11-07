@@ -68,7 +68,7 @@ RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --no-deps "audio-separator>=0.48.0" \
     && /opt/venv/bin/pip install --no-cache-dir -c constraints.txt \
         "beartype>=0.18.5,<0.19.0" "rotary-embedding-torch>=0.6.1,<0.7.0" \
-        "onnxruntime" "pydub>=0.25" "ml_collections" "resampy>=0.4" "audioread" \
+        "onnxruntime" "pydub>=0.25" "ml_collections" "resampy>=0.4" "audioread" "six" \
     && if [ "${SLIM}" = "1" ]; then \
         /opt/venv/bin/pip uninstall -y triton; \
        fi \
